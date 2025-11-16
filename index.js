@@ -103,7 +103,7 @@ async function createNotionOrder(text, lineName) {
   // 基本欄位（必填 + LINE 名稱 + 更新時間）
   const properties = {
     商品名稱: {
-      title: [{ text: { content: productName || "(未填商品)" } }],
+      rich_text: [{ text: { content: productName || "(未填商品)" } }],
     },
     LINE名稱: {
       rich_text: [{ text: { content: lineName } }],
@@ -177,3 +177,4 @@ const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Server running on ${port}`);
 });
+

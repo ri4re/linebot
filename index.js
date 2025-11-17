@@ -9,7 +9,6 @@ import line from "@line/bot-sdk";
 // ---------- 0. Notion & LINE 基本設定 ----------
 
 const app = express();
-app.use(express.json());
 
 const notion = new Client({ auth: process.env.NOTION_SECRET });
 
@@ -542,3 +541,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server running on", PORT);
 });
+

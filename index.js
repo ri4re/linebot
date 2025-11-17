@@ -1,14 +1,13 @@
-// index.js －－ 魚魚專用後台 LINE Bot + Notion 一檔整合版
-// 前提：package.json 設 "type": "module"
-// 環境變數：LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET, NOTION_SECRET, NOTION_DATABASE_ID
+// index.js — 魚魚專用後台 LINE Bot + Notion
 
 import express from "express";
 import { Client } from "@notionhq/client";
 import line from "@line/bot-sdk";
 
-// ---------- 0. Notion & LINE 基本設定 ----------
-
 const app = express();
+
+// 這次我們就用一般 JSON，**不要再用 line.middleware**
+app.use(express.json());
 
 const notion = new Client({ auth: process.env.NOTION_SECRET });
 
@@ -16,21 +15,22 @@ const lineConfig = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.LINE_CHANNEL_SECRET,
 };
+
 const lineClient = new line.Client(lineConfig);
 
-// 🔗 記得在外面 app.use(line.middleware(lineConfig)) 如果你原本有在用
-// 這裡一起放進來：
-app.post(
-  "/webhook",
-  line.middleware(lineConfig),
-  async (req, res) => {
+// 不做簽名驗證版本（自己用後台足夠）
+app.post("/webhook", async (req, res) => {
+  try {
     const events = req.body.events || [];
     const results = await Promise.all(
       events.map(handleLineEvent)
     );
     res.json(results);
+  } catch (err) {
+    console.error("webhook error", err);
+    res.status(500).end();
   }
-);
+});
 
 // ---------- 1. Notion 欄位對應（照你現在的 Notion） ----------
 
@@ -541,4 +541,5 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server running on", PORT);
 });
+
 

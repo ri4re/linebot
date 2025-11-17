@@ -9,9 +9,7 @@ import line from "@line/bot-sdk";
 
 // Express
 const app = express();
-// 注意：如果使用 line.middleware，express.json() 應該移除或在 middleware 之前
-// 這裡先保留，但在正式環境建議使用 LINE SDK 的驗證中間件
-// app.use(express.json()); 
+app.use(express.json()); // 保留 express.json() for non-signed webhook
 
 // Notion Client（用 NOTION_API_KEY）
 const notion = new Client({
@@ -70,7 +68,6 @@ async function getUserProfile(userId) {
 
 async function createOrderFromText(text, userDisplayName) {
   // 格式：客人 商品 數量 金額 [備註...]
-  // 例：魚魚 官方相卡2 350 宅配
   const parts = text.trim().split(/\s+/);
 
   if (parts.length < 4) {
@@ -92,7 +89,6 @@ async function createOrderFromText(text, userDisplayName) {
   const page = await notion.pages.create({
     parent: { database_id: NOTION_DATABASE_ID },
     properties: {
-      // 標題（信箱）：用 LINE 名稱或固定字串填入
       [PROPS.title]: {
         title: [
           {
@@ -117,7 +113,6 @@ async function createOrderFromText(text, userDisplayName) {
       [PROPS.paidAmount]: {
         number: 0,
       },
-      // 這裡用 status
       [PROPS.paymentStatus]: {
         status: { name: "未付款" },
       },
@@ -180,15 +175,17 @@ async function queryUnpaid() {
         property: PROPS.paymentStatus,
         status: { equals: "未付款" },
       },
-      {
-        property: PROPS.amount,
-        number: { greater_than: 0 },
-      },
+      // 這裡移除金額 > 0 的限制，因為用戶原始需求是「未付」或「欠款」，
+      // 這通常指所有狀態為「未付款」的訂單
+      // { 
+      //   property: PROPS.amount,
+      //   number: { greater_than: 0 },
+      // },
     ],
   });
 }
 
-// ****************************** 4. LINE 訊息解析 (核心邏輯調整) ******************************
+// ****************************** 4. LINE 訊息解析 ******************************
 
 function buildHelpText() {
   return [
@@ -206,7 +203,6 @@ function buildHelpText() {
 
 async function handleTextMessage(event) {
   const rawText = event.message.text.trim();
-  const lowerText = rawText.toLowerCase(); // 方便指令判斷
 
   // 1. 獲取用戶名稱 (用於新增訂單)
   let userName = "LINE 訂單";
@@ -214,16 +210,18 @@ async function handleTextMessage(event) {
     userName = await getUserProfile(event.source.userId);
   }
 
-  // 2. 格式指令 (最高優先級)
-  if (lowerText === "格式") {
+  // ********* 指令判斷區塊 (優先處理) *********
+
+  // 2. 格式指令
+  if (rawText === "格式") {
     return lineClient.replyMessage(event.replyToken, {
       type: "text",
       text: buildHelpText(),
     });
   }
 
-  // 3. 未付 / 欠款
-  if (lowerText === "未付" || lowerText === "欠款") {
+  // 3. 未付 / 欠款 (修復後的邏輯)
+  if (rawText === "未付" || rawText === "欠款") {
     const results = await queryUnpaid();
 
     if (results.length === 0) {
@@ -252,9 +250,9 @@ async function handleTextMessage(event) {
     });
   }
 
-  // 4. 查 客人
-  if (lowerText.startsWith("查 ")) {
-    const keyword = rawText.slice(2).trim();
+  // 4. 查 客人 (修正為精確的 startsWith)
+  if (rawText.startsWith("查 ")) {
+    const keyword = rawText.slice(2).trim(); // 抓取空格之後的內容
     if (!keyword) {
       return lineClient.replyMessage(event.replyToken, {
         type: "text",
@@ -288,9 +286,9 @@ async function handleTextMessage(event) {
     });
   }
 
-  // 5. 查商品 XXX
-  if (lowerText.startsWith("查商品")) {
-    const keyword = rawText.replace("查商品", "").trim();
+  // 5. 查商品 XXX (修正為精確的 startsWith)
+  if (rawText.startsWith("查商品")) {
+    const keyword = rawText.slice(3).trim(); // "查商品" 有三個字元
     if (!keyword) {
       return lineClient.replyMessage(event.replyToken, {
         type: "text",
@@ -324,7 +322,9 @@ async function handleTextMessage(event) {
     });
   }
 
-  // 6. 其他文字 → 當「新增訂單」試試看 (最低優先級)
+  // ********* 新增訂單區塊 (最低優先級 / Fallback) *********
+
+  // 6. 其他文字 → 當「新增訂單」試試看
   try {
     const order = await createOrderFromText(rawText, userName);
 
@@ -349,11 +349,20 @@ async function handleTextMessage(event) {
     console.error("createOrderFromText error", err.message);
 
     // 格式錯誤時回覆更清晰的訊息
-    const formatErrorMsg = "處理時發生錯誤 💔\n請確認格式是否為：客人 商品 數量 金額 [備註]\n(例如：魚魚 相卡 2 350 宅配)";
+    const formatErrorMsg = "💔 處理時發生錯誤。\n請確認格式：客人 商品 數量 金額 [備註]\n(例如：魚魚 相卡 2 350 宅配)";
 
+    // 只有在明確是格式錯誤或數字錯誤時，才回覆友善提示。
+    if (err.message.includes('格式不足') || err.message.includes('不是數字')) {
+      return lineClient.replyMessage(event.replyToken, {
+        type: "text",
+        text: formatErrorMsg,
+      });
+    }
+
+    // 其他錯誤（例如 Notion API 錯誤），回覆系統錯誤
     return lineClient.replyMessage(event.replyToken, {
       type: "text",
-      text: err.message.startsWith('格式不足') || err.message.includes('不是數字') ? formatErrorMsg : `系統錯誤：${err.message}`,
+      text: `發生系統錯誤：${err.message}`,
     });
   }
 }
@@ -367,19 +376,7 @@ async function handleLineEvent(event) {
   return handleTextMessage(event);
 }
 
-// 推薦：啟用簽名驗證版本 (更安全)
-// app.post("/webhook", line.middleware(lineConfig), async (req, res) => {
-//   try {
-//     const events = req.body.events || [];
-//     const results = await Promise.all(events.map(handleLineEvent));
-//     res.json(results);
-//   } catch (err) {
-//     console.error("webhook error", err);
-//     res.status(500).end();
-//   }
-// });
-
-// 不做簽名驗證版本（您原本的版本，但請注意安全性）
+// 不做簽名驗證版本（請注意安全性）
 app.post("/webhook", async (req, res) => {
   try {
     const events = req.body.events || [];

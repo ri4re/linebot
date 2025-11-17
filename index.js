@@ -9,7 +9,7 @@ import line from "@line/bot-sdk";
 
 // Express
 const app = express();
-app.use(express.json()); // 保留 express.json() for non-signed webhook
+app.use(express.json()); 
 
 // Notion Client（用 NOTION_API_KEY）
 const notion = new Client({
@@ -26,7 +26,7 @@ const PROPS = {
   quantity: "數量",
   amount: "金額",
   paidAmount: "已付金額",
-  paymentStatus: "付款狀態", // Status 欄位
+  paymentStatus: "付款狀態", // 假定為 Select 屬性，以解決 Notion API 錯誤
   memo: "備註",
   updatedAt: "更新日期",
 };
@@ -52,13 +52,12 @@ function getRichTextText(richTextArray) {
   return richTextArray.map((t) => t.plain_text || "").join("");
 }
 
-// 獲取 LINE 用戶名稱 (用於新增訂單 Title)
+// 獲取 LINE 用戶名稱
 async function getUserProfile(userId) {
   try {
     const profile = await lineClient.getProfile(userId);
     return profile.displayName;
   } catch (err) {
-    // 可能是群組/房間訊息或 LINE API 錯誤
     console.warn(`無法獲取用戶 ID ${userId} 的 profile:`, err.message);
     return "LINE 訂單";
   }
@@ -68,7 +67,8 @@ async function getUserProfile(userId) {
 
 async function createOrderFromText(text, userDisplayName) {
   // 格式：客人 商品 數量 金額 [備註...]
-  const parts = text.trim().split(/\s+/);
+  // 強化：使用彈性分割，並過濾空字串
+  const parts = text.trim().split(/\s+/).filter(p => p); 
 
   if (parts.length < 4) {
     throw new Error("格式不足：需要 客人 商品 數量 金額");
@@ -76,6 +76,8 @@ async function createOrderFromText(text, userDisplayName) {
 
   const customerName = parts[0];
   const productName = parts[1];
+  
+  // 確保數字轉換的安全性
   const quantity = Number(parts[2]);
   const amount = Number(parts[3]);
   const memo = parts.slice(4).join(" ") || "";
@@ -113,8 +115,9 @@ async function createOrderFromText(text, userDisplayName) {
       [PROPS.paidAmount]: {
         number: 0,
       },
+      // ❗ 修復點：使用 select 屬性
       [PROPS.paymentStatus]: {
-        status: { name: "未付款" },
+        select: { name: "未付款" },
       },
       [PROPS.memo]: {
         rich_text: memo ? [{ text: { content: memo } }] : [],
@@ -138,6 +141,7 @@ async function createOrderFromText(text, userDisplayName) {
 // ****************************** 3. 查詢（Notion databases.query） ******************************
 
 async function queryDatabase(filter) {
+  // ❗ 修復點：修正 notion.databases.query 錯誤
   const res = await notion.databases.query({
     database_id: NOTION_DATABASE_ID,
     filter,
@@ -167,21 +171,12 @@ async function queryByProduct(keyword) {
   });
 }
 
-// 查欠款（未付款＋金額>0）
+// 查欠款（未付款）
 async function queryUnpaid() {
   return queryDatabase({
-    and: [
-      {
-        property: PROPS.paymentStatus,
-        status: { equals: "未付款" },
-      },
-      // 這裡移除金額 > 0 的限制，因為用戶原始需求是「未付」或「欠款」，
-      // 這通常指所有狀態為「未付款」的訂單
-      // { 
-      //   property: PROPS.amount,
-      //   number: { greater_than: 0 },
-      // },
-    ],
+    // ❗ 修復點：使用 select 篩選
+    property: PROPS.paymentStatus,
+    select: { equals: "未付款" },
   });
 }
 
@@ -204,7 +199,6 @@ function buildHelpText() {
 async function handleTextMessage(event) {
   const rawText = event.message.text.trim();
 
-  // 1. 獲取用戶名稱 (用於新增訂單)
   let userName = "LINE 訂單";
   if (event.source.userId) {
     userName = await getUserProfile(event.source.userId);
@@ -212,7 +206,7 @@ async function handleTextMessage(event) {
 
   // ********* 指令判斷區塊 (優先處理) *********
 
-  // 2. 格式指令
+  // 1. 格式指令
   if (rawText === "格式") {
     return lineClient.replyMessage(event.replyToken, {
       type: "text",
@@ -220,111 +214,139 @@ async function handleTextMessage(event) {
     });
   }
 
-  // 3. 未付 / 欠款 (修復後的邏輯)
+  // 2. 未付 / 欠款
   if (rawText === "未付" || rawText === "欠款") {
-    const results = await queryUnpaid();
-
-    if (results.length === 0) {
-      return lineClient.replyMessage(event.replyToken, {
-        type: "text",
-        text: "💰 目前沒有未付款訂單。",
-      });
+    try {
+        const results = await queryUnpaid();
+    
+        if (results.length === 0) {
+            return lineClient.replyMessage(event.replyToken, {
+                type: "text",
+                text: "💰 目前沒有未付款訂單。",
+            });
+        }
+    
+        const lines = results.slice(0, 10).map((page, idx) => {
+            const props = page.properties;
+            const customer = getRichTextText(props[PROPS.customerName]?.rich_text);
+            const product = getRichTextText(props[PROPS.productName]?.rich_text);
+            const amount = props[PROPS.amount]?.number ?? 0;
+            const paid = props[PROPS.paidAmount]?.number ?? 0;
+            const remain = amount - paid;
+    
+            return `${idx + 1}️⃣ ${customer}｜${product}｜$${amount}｜已付$${paid}｜剩$${remain}\nID：${shortId(
+                page.id
+            )}`;
+        });
+    
+        return lineClient.replyMessage(event.replyToken, {
+            type: "text",
+            text: `💸 未付款訂單（前 ${results.length > 10 ? 10 : results.length} 筆）：\n\n${lines.join("\n\n")}`,
+        });
+    } catch (queryErr) {
+         console.error("queryUnpaid error", queryErr);
+         return lineClient.replyMessage(event.replyToken, {
+            type: "text",
+            text: `💔 查詢欠款發生錯誤：請檢查 Notion 資料庫結構。`,
+        });
     }
-
-    const lines = results.slice(0, 10).map((page, idx) => {
-      const props = page.properties;
-      const customer = getRichTextText(props[PROPS.customerName]?.rich_text);
-      const product = getRichTextText(props[PROPS.productName]?.rich_text);
-      const amount = props[PROPS.amount]?.number ?? 0;
-      const paid = props[PROPS.paidAmount]?.number ?? 0;
-      const remain = amount - paid;
-
-      return `${idx + 1}️⃣ ${customer}｜${product}｜$${amount}｜已付$${paid}｜剩$${remain}\nID：${shortId(
-        page.id
-      )}`;
-    });
-
-    return lineClient.replyMessage(event.replyToken, {
-      type: "text",
-      text: `💸 未付款訂單（前 ${results.length > 10 ? 10 : results.length} 筆）：\n\n${lines.join("\n\n")}`,
-    });
   }
 
-  // 4. 查 客人 (修正為精確的 startsWith)
+  // 3. 查 客人 (修正為精確的 startsWith)
   if (rawText.startsWith("查 ")) {
-    const keyword = rawText.slice(2).trim(); // 抓取空格之後的內容
-    if (!keyword) {
-      return lineClient.replyMessage(event.replyToken, {
-        type: "text",
-        text: "請輸入要查的客人名稱，例如：查 魚魚",
-      });
+    try {
+        const keyword = rawText.slice(2).trim();
+        if (!keyword) {
+            return lineClient.replyMessage(event.replyToken, {
+                type: "text",
+                text: "請輸入要查的客人名稱，例如：查 魚魚",
+            });
+        }
+    
+        const results = await queryByCustomer(keyword);
+        
+        if (results.length === 0) {
+            return lineClient.replyMessage(event.replyToken, {
+                type: "text",
+                text: `🔍 找不到客人「${keyword}」的訂單`,
+            });
+        }
+    
+        const lines = results.slice(0, 10).map((page, idx) => {
+            const props = page.properties;
+            const customer = getRichTextText(props[PROPS.customerName]?.rich_text);
+            const product = getRichTextText(props[PROPS.productName]?.rich_text);
+            const amount = props[PROPS.amount]?.number ?? 0;
+            // ❗ 修復點：讀取 select 屬性
+            const status = props[PROPS.paymentStatus]?.select?.name ?? "";
+    
+            return `${idx + 1}️⃣ ${customer}｜${product}｜$${amount}｜${status}\nID：${shortId(
+                page.id
+            )}`;
+        });
+    
+        return lineClient.replyMessage(event.replyToken, {
+            type: "text",
+            text: `🔍 客人「${keyword}」訂單（前 ${results.length > 10 ? 10 : results.length} 筆）：\n\n${lines.join("\n\n")}`,
+        });
+    } catch (queryErr) {
+        console.error("queryByCustomer error", queryErr);
+         return lineClient.replyMessage(event.replyToken, {
+            type: "text",
+            text: `💔 查詢客人發生錯誤：請檢查 Notion 資料庫結構。`,
+        });
     }
-
-    const results = await queryByCustomer(keyword);
-    if (results.length === 0) {
-      return lineClient.replyMessage(event.replyToken, {
-        type: "text",
-        text: `🔍 找不到客人「${keyword}」的訂單`,
-      });
-    }
-
-    const lines = results.slice(0, 10).map((page, idx) => {
-      const props = page.properties;
-      const customer = getRichTextText(props[PROPS.customerName]?.rich_text);
-      const product = getRichTextText(props[PROPS.productName]?.rich_text);
-      const amount = props[PROPS.amount]?.number ?? 0;
-      const status = props[PROPS.paymentStatus]?.status?.name ?? "";
-
-      return `${idx + 1}️⃣ ${customer}｜${product}｜$${amount}｜${status}\nID：${shortId(
-        page.id
-      )}`;
-    });
-
-    return lineClient.replyMessage(event.replyToken, {
-      type: "text",
-      text: `🔍 客人「${keyword}」訂單（前 ${results.length > 10 ? 10 : results.length} 筆）：\n\n${lines.join("\n\n")}`,
-    });
   }
 
-  // 5. 查商品 XXX (修正為精確的 startsWith)
+  // 4. 查商品 XXX
   if (rawText.startsWith("查商品")) {
-    const keyword = rawText.slice(3).trim(); // "查商品" 有三個字元
-    if (!keyword) {
-      return lineClient.replyMessage(event.replyToken, {
-        type: "text",
-        text: "請輸入要查的商品，例如：查商品 相卡",
-      });
+    try {
+        const keyword = rawText.slice(3).trim(); // "查商品" 有三個字元
+        if (!keyword) {
+            return lineClient.replyMessage(event.replyToken, {
+                type: "text",
+                text: "請輸入要查的商品，例如：查商品 相卡",
+            });
+        }
+    
+        const results = await queryByProduct(keyword);
+        
+        if (results.length === 0) {
+            return lineClient.replyMessage(event.replyToken, {
+                type: "text",
+                text: `🔍 找不到商品「${keyword}」的訂單`,
+            });
+        }
+    
+        const lines = results.slice(0, 10).map((page, idx) => {
+            const props = page.properties;
+            const customer = getRichTextText(props[PROPS.customerName]?.rich_text);
+            const product = getRichTextText(props[PROPS.productName]?.rich_text);
+            const amount = props[PROPS.amount]?.number ?? 0;
+            // ❗ 修復點：讀取 select 屬性
+            const status = props[PROPS.paymentStatus]?.select?.name ?? "";
+    
+            return `${idx + 1}️⃣ ${customer}｜${product}｜$${amount}｜${status}\nID：${shortId(
+                page.id
+            )}`;
+        });
+    
+        return lineClient.replyMessage(event.replyToken, {
+            type: "text",
+            text: `🔍 商品「${keyword}」訂單（前 ${results.length > 10 ? 10 : results.length} 筆）：\n\n${lines.join("\n\n")}`,
+        });
+    } catch (queryErr) {
+        console.error("queryByProduct error", queryErr);
+         return lineClient.replyMessage(event.replyToken, {
+            type: "text",
+            text: `💔 查詢商品發生錯誤：請檢查 Notion 資料庫結構。`,
+        });
     }
-
-    const results = await queryByProduct(keyword);
-    if (results.length === 0) {
-      return lineClient.replyMessage(event.replyToken, {
-        type: "text",
-        text: `🔍 找不到商品「${keyword}」的訂單`,
-      });
-    }
-
-    const lines = results.slice(0, 10).map((page, idx) => {
-      const props = page.properties;
-      const customer = getRichTextText(props[PROPS.customerName]?.rich_text);
-      const product = getRichTextText(props[PROPS.productName]?.rich_text);
-      const amount = props[PROPS.amount]?.number ?? 0;
-      const status = props[PROPS.paymentStatus]?.status?.name ?? "";
-
-      return `${idx + 1}️⃣ ${customer}｜${product}｜$${amount}｜${status}\nID：${shortId(
-        page.id
-      )}`;
-    });
-
-    return lineClient.replyMessage(event.replyToken, {
-      type: "text",
-      text: `🔍 商品「${keyword}」訂單（前 ${results.length > 10 ? 10 : results.length} 筆）：\n\n${lines.join("\n\n")}`,
-    });
   }
 
   // ********* 新增訂單區塊 (最低優先級 / Fallback) *********
 
-  // 6. 其他文字 → 當「新增訂單」試試看
+  // 5. 其他文字 → 當「新增訂單」試試看
   try {
     const order = await createOrderFromText(rawText, userName);
 
@@ -348,10 +370,9 @@ async function handleTextMessage(event) {
   } catch (err) {
     console.error("createOrderFromText error", err.message);
 
-    // 格式錯誤時回覆更清晰的訊息
     const formatErrorMsg = "💔 處理時發生錯誤。\n請確認格式：客人 商品 數量 金額 [備註]\n(例如：魚魚 相卡 2 350 宅配)";
 
-    // 只有在明確是格式錯誤或數字錯誤時，才回覆友善提示。
+    // 只有在明確是格式錯誤或數字錯誤時，回覆友善提示。
     if (err.message.includes('格式不足') || err.message.includes('不是數字')) {
       return lineClient.replyMessage(event.replyToken, {
         type: "text",
@@ -359,10 +380,10 @@ async function handleTextMessage(event) {
       });
     }
 
-    // 其他錯誤（例如 Notion API 錯誤），回覆系統錯誤
+    // 其他錯誤（例如 Notion API 錯誤）
     return lineClient.replyMessage(event.replyToken, {
       type: "text",
-      text: `發生系統錯誤：${err.message}`,
+      text: `發生系統錯誤：${err.message.slice(0, 50)}...`,
     });
   }
 }
@@ -376,7 +397,7 @@ async function handleLineEvent(event) {
   return handleTextMessage(event);
 }
 
-// 不做簽名驗證版本（請注意安全性）
+// 不做簽名驗證版本
 app.post("/webhook", async (req, res) => {
   try {
     const events = req.body.events || [];

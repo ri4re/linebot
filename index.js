@@ -9,7 +9,8 @@ const app = express();
 // 這次我們就用一般 JSON，**不要再用 line.middleware**
 app.use(express.json());
 
-const notion = new Client({ auth: process.env.NOTION_SECRET });
+const notion = new Client({ auth: process.env.NOTION_API_KEY,
+});
 
 const lineConfig = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
@@ -541,5 +542,6 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server running on", PORT);
 });
+
 
 

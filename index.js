@@ -1,30 +1,30 @@
 // ===============================
-// LINE Bot + Notion 連動（正式版）
+// LINE Bot + Notion（ESM 正式版）
 // ===============================
 
-require("dotenv").config();
-const express = require("express");
-const { Client } = require("@notionhq/client");
-const line = require("@line/bot-sdk");
+import "dotenv/config";
+import express from "express";
+import { Client as NotionClient } from "@notionhq/client";
+import line from "@line/bot-sdk";
 
 const app = express();
 app.use(express.json());
 
 // ===============================
-// 🔑 讀取環境變數（Render 用）
+// 🔑 環境變數
 // ===============================
 const NOTION_API_KEY = process.env.NOTION_API_KEY;
-const NOTION_DATABASE_ID = process.env.NOTION_DATABASE_ID;   // 你只要貼 32碼版本
+const NOTION_DATABASE_ID = process.env.NOTION_DATABASE_ID;
 const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
 const LINE_CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET;
 
 // ===============================
-// Notion Client
+// 🟦 Notion Client
 // ===============================
-const notion = new Client({ auth: NOTION_API_KEY });
+const notion = new NotionClient({ auth: NOTION_API_KEY });
 
 // ===============================
-// LINE Client
+// 🟩 LINE Client
 // ===============================
 const lineConfig = {
   channelAccessToken: LINE_CHANNEL_ACCESS_TOKEN,
@@ -33,97 +33,87 @@ const lineConfig = {
 const lineClient = new line.Client(lineConfig);
 
 // ===============================
-// 📝 Notion 新增資料
+// 📝 新增到 Notion
 // ===============================
-async function addOrderToNotion(orderData) {
-  try {
-    const res = await notion.pages.create({
-      parent: { database_id: NOTION_DATABASE_ID },
-      properties: {
-        "客人": { title: [{ text: { content: orderData.customer } }] },
-        "商品": { rich_text: [{ text: { content: orderData.item } }] },
-        "數量": { number: orderData.qty },
-        "金額": { number: orderData.price },
-        "備註": { rich_text: [{ text: { content: orderData.note } }] },
-        "付款狀態": { select: { name: orderData.status } },
-      }
-    });
-    return res;
-  } catch (err) {
-    console.error("❌ Notion 寫入失敗：", err);
-    throw err;
-  }
+async function addOrder(data) {
+  return await notion.pages.create({
+    parent: { database_id: NOTION_DATABASE_ID },
+    properties: {
+      "客人": { title: [{ text: { content: data.customer } }] },
+      "商品": { rich_text: [{ text: { content: data.item } }] },
+      "數量": { number: data.qty },
+      "金額": { number: data.price },
+      "備註": { rich_text: [{ text: { content: data.note } }] },
+    }
+  });
 }
 
 // ===============================
 // 🔍 查詢 Notion
 // ===============================
 async function queryOrders() {
-  try {
-    const res = await notion.databases.query({
-      database_id: NOTION_DATABASE_ID,
-    });
-    return res.results;
-  } catch (err) {
-    console.error("❌ Notion 查詢失敗：", err);
-    throw err;
-  }
+  return await notion.databases.query({
+    database_id: NOTION_DATABASE_ID,
+  });
 }
 
 // ===============================
 // LINE Webhook
 // ===============================
 app.post("/webhook", (req, res) => {
-  Promise
-    .all(req.body.events.map(handleEvent))
-    .then((result) => res.json(result));
+  Promise.all(req.body.events.map(handleEvent))
+    .then((result) => res.json(result))
+    .catch((err) => {
+      console.error("Webhook Error:", err);
+    });
 });
 
 // ===============================
-// LINE 訊息處理
+// 處理訊息
 // ===============================
 async function handleEvent(event) {
   if (event.type !== "message" || event.message.type !== "text") return;
 
   const text = event.message.text.trim();
 
-  // 範例：新增資料
+  // 新增：新增 商品 數量 金額 備註
   if (text.startsWith("新增 ")) {
     const parts = text.replace("新增 ", "").split(" ");
-    const order = {
-      customer: event.source.userId,  // 或你要改成自動抓 LINE 名稱
+
+    const data = {
+      customer: event.source.userId,
       item: parts[0],
       qty: Number(parts[1]),
       price: Number(parts[2]),
       note: parts[3] || "",
-      status: "未付款",
     };
 
-    await addOrderToNotion(order);
+    await addOrder(data);
+
     return lineClient.replyMessage(event.replyToken, {
       type: "text",
-      text: "✅ Notion 已新增訂單！",
+      text: "✔ 已新增到 Notion！"
     });
   }
 
-  // 查詢 Notion
+  // 查詢
   if (text === "查詢") {
-    const list = await queryOrders();
+    const results = await queryOrders();
     return lineClient.replyMessage(event.replyToken, {
       type: "text",
-      text: `目前有 ${list.length} 筆訂單`,
+      text: `目前有 ${results.results.length} 筆訂單`,
     });
   }
 
   return lineClient.replyMessage(event.replyToken, {
     type: "text",
-    text: "❓ 指令錯誤，請重新輸入。",
+    text: "❓ 指令錯誤"
   });
 }
 
 // ===============================
-// 啟動 Server
+// 啟動
 // ===============================
 app.listen(3000, () => {
-  console.log("Server running on 3000");
+  console.log("Server running on port 3000");
 });

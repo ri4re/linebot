@@ -7,9 +7,10 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "axios": "^1.7.7",
     "@line/bot-sdk": "^7.6.0",
-    "dotenv": "^16.4.5"
+    "@notionhq/client": "^5.4.0",
+    "axios": "^1.7.7",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
   }
 }

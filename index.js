@@ -33,36 +33,24 @@ const lineClient = new line.Client({
 });
 
 // ===============================
-// 📝 寫入 Notion（符合你的欄位）
+// 📝 寫入 Notion — 新增訂單（付款狀態留空）
 // ===============================
 async function addOrder(data) {
   return await notion.pages.create({
     parent: { database_id: NOTION_DATABASE_ID },
     properties: {
-      "客人名稱": {
-        rich_text: [{ text: { content: data.customer } }]
-      },
-      "商品名稱": {
-        rich_text: [{ text: { content: data.item } }]
-      },
-      "數量": {
-        number: data.qty
-      },
-      "金額": {
-        number: data.price
-      },
-      "備註": {
-        rich_text: [{ text: { content: data.note } }]
-      },
-      "付款狀態": {
-        select: { name: "未付款" }
-      }
+      "客人名稱": { rich_text: [{ text: { content: data.customer } }] },
+      "商品名稱": { rich_text: [{ text: { content: data.item } }] },
+      "數量": { number: data.qty },
+      "金額": { number: data.price },
+      "備註": { rich_text: [{ text: { content: data.note } }] }
+      // 付款狀態 不寫入，保持空白
     }
   });
 }
 
 // ===============================
-// 🔍 查詢 Notion 全部
+// 🔍 查詢全部
 // ===============================
 async function queryAll() {
   return await notion.databases.query({
@@ -78,21 +66,46 @@ async function queryKeyword(keyword) {
     database_id: NOTION_DATABASE_ID,
     filter: {
       or: [
-        {
-          property: "客人名稱",
-          rich_text: {
-            contains: keyword,
-          },
-        },
-        {
-          property: "商品名稱",
-          rich_text: {
-            contains: keyword,
-          },
-        }
+        { property: "客人名稱", rich_text: { contains: keyword } },
+        { property: "商品名稱", rich_text: { contains: keyword } }
       ],
     },
   });
+}
+
+// ===============================
+// 🧾 更新付款狀態（依 客人 + 商品）
+// ===============================
+async function updatePaymentStatus(customer, item, payStatus) {
+  const result = await notion.databases.query({
+    database_id: NOTION_DATABASE_ID,
+    filter: {
+      and: [
+        {
+          property: "客人名稱",
+          rich_text: { equals: customer }
+        },
+        {
+          property: "商品名稱",
+          rich_text: { contains: item }
+        }
+      ]
+    }
+  });
+
+  if (result.results.length === 0) return false;
+
+  // 取最新一筆
+  const pageId = result.results[0].id;
+
+  await notion.pages.update({
+    page_id: pageId,
+    properties: {
+      "付款狀態": { select: { name: payStatus } }
+    }
+  });
+
+  return true;
 }
 
 // ===============================
@@ -105,14 +118,14 @@ app.post("/webhook", (req, res) => {
 });
 
 // ===============================
-// 🧠 處理訊息（你的專屬格式）
+// 🧠 主處理邏輯
 // ===============================
 async function handleEvent(event) {
   if (event.type !== "message" || event.message.type !== "text") return;
 
   const text = event.message.text.trim();
 
-  // ⭐⭐ 指令：查詢全部 ⭐⭐
+  // ⭐ 查詢全部
   if (text === "查詢") {
     const list = await queryAll();
     return lineClient.replyMessage(event.replyToken, {
@@ -121,18 +134,17 @@ async function handleEvent(event) {
     });
   }
 
-  // ⭐⭐ 指令：查 XXX ⭐⭐
+  // ⭐ 查 XXX
   if (text.startsWith("查 ")) {
     const keyword = text.replace("查 ", "").trim();
     const res = await queryKeyword(keyword);
-
     return lineClient.replyMessage(event.replyToken, {
       type: "text",
       text: `🔍 搜尋「${keyword}」共有 ${res.results.length} 筆。`,
     });
   }
 
-  // ⭐⭐ 指令：格式 ⭐⭐
+  // ⭐ 格式說明
   if (text === "格式") {
     return lineClient.replyMessage(event.replyToken, {
       type: "text",
@@ -140,10 +152,37 @@ async function handleEvent(event) {
     });
   }
 
-  // ===============================
-  // ⭐⭐ 解析你的專屬輸入格式 ⭐⭐
-  // 例如：魚魚 相卡 2 350 宅配
-  // ===============================
+  // ⭐ 付款指令（付款 客人 商品 付款狀態）
+  if (text.startsWith("付款 ")) {
+    const parts = text.split(" ");
+
+    if (parts.length < 4) {
+      return lineClient.replyMessage(event.replyToken, {
+        type: "text",
+        text: "❗格式錯誤：付款 客人 商品 付款狀態",
+      });
+    }
+
+    const customer = parts[1];
+    const item = parts[2];
+    const payStatus = parts.slice(3).join(" ");
+
+    const ok = await updatePaymentStatus(customer, item, payStatus);
+
+    if (!ok) {
+      return lineClient.replyMessage(event.replyToken, {
+        type: "text",
+        text: `找不到：${customer} / ${item} 的訂單`,
+      });
+    }
+
+    return lineClient.replyMessage(event.replyToken, {
+      type: "text",
+      text: `✔ 已更新：${customer} / ${item} → ${payStatus}`,
+    });
+  }
+
+  // ⭐ 新增訂單格式：客人 商品 數量 金額 備註
   const parts = text.split(" ");
 
   if (parts.length >= 4) {
@@ -163,7 +202,7 @@ async function handleEvent(event) {
     });
   }
 
-  // ⭐⭐ 其他不符合 → 指令錯誤 ⭐⭐
+  // ⭐ 其他 → 指令錯誤
   return lineClient.replyMessage(event.replyToken, {
     type: "text",
     text: "❓ 指令錯誤（輸入「格式」查看範例）",
@@ -176,4 +215,3 @@ async function handleEvent(event) {
 app.listen(3000, () => {
   console.log("Server running on 3000");
 });
-

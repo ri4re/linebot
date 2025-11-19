@@ -26,12 +26,13 @@ const PROPS = {
   quantity: "數量", // number
   amount: "金額", // number
   paidAmount: "已付金額", // number
-  paymentStatus: "付款狀態", // Status 欄位
+  
+  // 🌟🌟🌟 核心：使用 Select 類型對應的「付款狀態」
+  paymentStatus: "付款狀態", // Select 欄位
+  
   memo: "備註", // rich text
   updatedAt: "更新日期", // date
-  
-  // 🌟🌟🌟 新增：使用您的「流水號」欄位 (Notion ID 屬性) 🌟🌟🌟
-  shortIdField: "流水號",
+  shortIdField: "流水號", // Unique ID 欄位
 };
 
 // LINE 設定
@@ -51,7 +52,7 @@ const QUICK_PRODUCTS = {
   "運費": "包裹寄送",
 };
 
-// 付款狀態名稱（請確認跟 Notion Status 欄位選項名稱一模一樣）
+// 付款狀態名稱（請確認跟 Notion Select 欄位選項名稱一模一樣）
 const PAYMENT_STATUS = {
   UNPAID: "未付款",
   PARTIAL: "部分付款",
@@ -66,13 +67,9 @@ function getRichTextText(richTextArray) {
   return richTextArray.map((t) => t.plain_text || "").join("");
 }
 
-// 🌟🌟🌟 移除 shortId 函式，因為我們改用 Notion 內建的「流水號」 🌟🌟🌟
-
-
 // 共用查詢：**不用 notion.databases.query，只用 request**
 async function queryDatabase(filter) {
   const body = {
-    // 依據更新日期排序
     sorts: [
       {
         property: PROPS.updatedAt,
@@ -94,26 +91,36 @@ async function queryDatabase(filter) {
   return res.results;
 }
 
-// 🌟🌟🌟 核心修改：根據「流水號」找到 Page ID (最穩健) 🌟🌟🌟
+// 根據「流水號」找到 Page ID (最穩健)
 async function findPageIdByShortId(shortId) {
-    // 1. 取得純數字 ID (如果使用者輸入 FISH-123，只取 123)
     const pureId = shortId.replace(/[^0-9]/g, ''); 
     if (!pureId) return null;
     
-    // 2. 使用 Notion API 的 unique_id 屬性過濾器進行精準查詢
+    // 使用 Notion API 的 unique_id 屬性過濾器進行精準查詢
     const pages = await queryDatabase({
         property: PROPS.shortIdField, // "流水號"
         unique_id: { equals: Number(pureId) }, // 必須轉成數字
     }); 
 
-    // 只需要第一筆結果 (因為 ID 是唯一的)
     return pages.length > 0 ? pages[0].id : null;
 }
 
-// ---------- 1. 解析文字 → 訂單結構或指令 ----------
+// 從 page 物件中讀取「流水號」欄位的值
+function getShortIdFromPage(page) {
+    const property = page.properties[PROPS.shortIdField];
+    if (property?.type === 'unique_id' && property.unique_id?.number) {
+        const prefix = property.unique_id.prefix || '';
+        return `${prefix}${property.unique_id.number}`;
+    }
+    // 如果是舊的 Page，API 不會返回 unique_id 屬性，需要 fallback
+    return '未知ID'; 
+}
 
-// 嘗試解析成「快速語彙」訂單 (與之前相同)
+
+// ---------- 1. 解析文字 → 訂單結構或指令 (此部分不變) ----------
+
 function parseQuickOrder(text) {
+  // ... (此處代碼不變，省略) ...
   const key = Object.keys(QUICK_PRODUCTS).find((k) => text.startsWith(k));
   if (!key) return null;
 
@@ -147,8 +154,8 @@ function parseQuickOrder(text) {
   };
 }
 
-// 一般訂單：客人 商品 數量 金額 [備註...] (與之前相同)
 function parseNormalOrder(text) {
+  // ... (此處代碼不變，省略) ...
   const parts = text.trim().split(/\s+/);
   if (parts.length < 4) return null;
 
@@ -171,7 +178,6 @@ function parseNormalOrder(text) {
   };
 }
 
-// 統一解析 (與之前相同)
 function parseOrder(text) {
   const quick = parseQuickOrder(text);
   if (quick) return quick;
@@ -182,10 +188,9 @@ function parseOrder(text) {
   return null;
 }
 
-// 解析「修改」指令：改 [流水號] [已付 | 付清 | 狀態: [新狀態]] [金額] [備註: [新備註]]
 function parseUpdate(text) {
+  // ... (此處代碼不變，省略) ...
   const parts = text.trim().split(/\s+/);
-  // 短 ID 現在可以是 FISH-123 或 123
   if (parts.length < 3 || parts[0] !== "改") return null;
 
   const shortId = parts[1];
@@ -223,8 +228,6 @@ function parseUpdate(text) {
 async function createOrder(order, originalText) {
   const nowIso = new Date().toISOString();
   
-  // 🌟🌟🌟 新增時不需要包含「流水號」，Notion 會自動生成 🌟🌟🌟
-
   const page = await notion.pages.create({
     parent: { database_id: NOTION_DATABASE_ID },
     properties: {
@@ -252,9 +255,12 @@ async function createOrder(order, originalText) {
       [PROPS.paidAmount]: {
         number: 0,
       },
+      
+      // 🌟🌟🌟 修正：將 status 改為 select 🌟🌟🌟
       [PROPS.paymentStatus]: {
-        status: { name: PAYMENT_STATUS.UNPAID }, // 一律先寫未付款
+        select: { name: PAYMENT_STATUS.UNPAID }, // 一律先寫未付款
       },
+      
       [PROPS.memo]: {
         rich_text: order.memo
           ? [{ text: { content: order.memo } }]
@@ -269,7 +275,6 @@ async function createOrder(order, originalText) {
   return page;
 }
 
-// updateOrder 函式 (與之前相同，邏輯不變)
 async function updateOrder(pageId, updates) {
   const properties = {
     [PROPS.updatedAt]: { date: { start: new Date().toISOString() } },
@@ -279,10 +284,15 @@ async function updateOrder(pageId, updates) {
   if (updates.paidAmount !== undefined || updates.status) {
     const currentPage = await notion.pages.retrieve({ page_id: pageId });
     const currentAmount = currentPage.properties[PROPS.amount]?.number ?? 0;
+    
+    // 讀取當前的 Select 或 Status 值
+    const currentStatusProp = currentPage.properties[PROPS.paymentStatus];
+    const currentStatus = currentStatusProp?.status?.name || currentStatusProp?.select?.name;
+    
     const currentPaid = currentPage.properties[PROPS.paidAmount]?.number ?? 0;
 
     let newPaidAmount = currentPaid;
-    let newStatus = updates.status || currentPage.properties[PROPS.paymentStatus]?.status?.name;
+    let newStatus = updates.status || currentStatus;
 
     if (updates.paidAmount === "FULL") {
       newPaidAmount = currentAmount;
@@ -305,8 +315,10 @@ async function updateOrder(pageId, updates) {
     if (newPaidAmount !== undefined) {
       properties[PROPS.paidAmount] = { number: newPaidAmount };
     }
+    
+    // 🌟🌟🌟 修正：將 status: 改為 select: 🌟🌟🌟
     if (newStatus) {
-      properties[PROPS.paymentStatus] = { status: { name: newStatus } };
+      properties[PROPS.paymentStatus] = { select: { name: newStatus } };
     }
   }
 
@@ -327,7 +339,7 @@ async function updateOrder(pageId, updates) {
 
 // ---------- 3. 查詢功能 ----------
 
-// 查客人 (與之前相同)
+// 查客人 (不變)
 async function queryByCustomer(name) {
   return queryDatabase({
     property: PROPS.customerName,
@@ -335,7 +347,7 @@ async function queryByCustomer(name) {
   });
 }
 
-// 查商品 (與之前相同)
+// 查商品 (不變)
 async function queryByProduct(keyword) {
   return queryDatabase({
     property: PROPS.productName,
@@ -343,19 +355,21 @@ async function queryByProduct(keyword) {
   });
 }
 
-// 查未付款（未付或部分付款）(與之前相同)
+// 查未付款（未付或部分付款）
 async function queryUnpaid() {
+  // 🌟🌟🌟 修正：將 status 過濾器改為 select 過濾器 🌟🌟🌟
   return queryDatabase({
     or: [
-      { property: PROPS.paymentStatus, status: { equals: PAYMENT_STATUS.UNPAID } },
-      { property: PROPS.paymentStatus, status: { equals: PAYMENT_STATUS.PARTIAL } },
+      { property: PROPS.paymentStatus, select: { equals: PAYMENT_STATUS.UNPAID } },
+      { property: PROPS.paymentStatus, select: { equals: PAYMENT_STATUS.PARTIAL } },
     ]
   });
 }
 
-// ---------- 4. LINE 訊息處理 ----------
+// ---------- 4. LINE 訊息處理 (此部分僅修改讀取短 ID 和狀態的邏輯) ----------
 
 function buildHelpText() {
+  // ... (此處代碼不變，省略) ...
   return [
     "📌 訂單格式：",
     "• 客人 商品 數量 金額 [備註...]",
@@ -375,17 +389,6 @@ function buildHelpText() {
     "⚠️ 請使用 Notion 資料庫中的「流水號」進行修改。",
   ].join("\n");
 }
-
-// 從 page 物件中讀取「流水號」欄位的值
-function getShortIdFromPage(page) {
-    const property = page.properties[PROPS.shortIdField];
-    if (property?.type === 'unique_id' && property.unique_id?.number) {
-        const prefix = property.unique_id.prefix || '';
-        return `${prefix}${property.unique_id.number}`;
-    }
-    return '未知ID';
-}
-
 
 async function handleTextMessage(event) {
   const text = event.message.text.trim();
@@ -410,7 +413,6 @@ async function handleTextMessage(event) {
     }
 
     try {
-      // 🌟 使用新的、更穩健的短 ID 搜尋邏輯
       const pageId = await findPageIdByShortId(update.shortId);
       
       if (!pageId) {
@@ -428,9 +430,11 @@ async function handleTextMessage(event) {
       const prod = getRichTextText(props[PROPS.productName]?.rich_text);
       const amt = props[PROPS.amount]?.number ?? 0;
       const paid = props[PROPS.paidAmount]?.number ?? 0;
-      const status = props[PROPS.paymentStatus]?.status?.name ?? "";
-      const memo = getRichTextText(props[PROPS.memo]?.rich_text);
-      // 讀取「流水號」
+      
+      // 🌟🌟🌟 讀取狀態：優先讀取 Select，如果沒有再嘗試 Status 🌟🌟🌟
+      const statusProp = props[PROPS.paymentStatus];
+      const status = statusProp?.select?.name || statusProp?.status?.name || "";
+      
       const finalShortId = getShortIdFromPage(updatedPage);
 
 
@@ -439,7 +443,7 @@ async function handleTextMessage(event) {
         `流水號：${finalShortId}`,
         `客人：${c}｜商品：${prod}`,
         `金額：$${amt}｜已付：$${paid}｜狀態：${status}`,
-        memo ? `備註：${memo}` : "",
+        getRichTextText(props[PROPS.memo]?.rich_text) ? `備註：${getRichTextText(props[PROPS.memo]?.rich_text)}` : "",
       ].filter(Boolean);
 
       return lineClient.replyMessage(replyToken, {
@@ -448,9 +452,17 @@ async function handleTextMessage(event) {
       });
     } catch (err) {
       console.error("updateOrder error", err);
+      // 再次檢查錯誤是否為 API 錯誤
+      let errorMessage = "修改訂單時發生錯誤 QQ";
+      if (err.body) {
+         try {
+             const errorBody = JSON.parse(err.body);
+             errorMessage += `\nNotion錯誤: ${errorBody.message}`;
+         } catch (e) { /* ignore */ }
+      }
       return lineClient.replyMessage(replyToken, {
         type: "text",
-        text: "修改訂單時發生錯誤 QQ",
+        text: errorMessage,
       });
     }
   }
@@ -474,8 +486,12 @@ async function handleTextMessage(event) {
         const amt = props[PROPS.amount]?.number ?? 0;
         const paid = props[PROPS.paidAmount]?.number ?? 0;
         const remain = amt - paid;
-        const status = props[PROPS.paymentStatus]?.status?.name ?? "";
-        const finalShortId = getShortIdFromPage(p); // 讀取「流水號」
+        
+        // 🌟🌟🌟 讀取狀態：優先讀取 Select 🌟🌟🌟
+        const statusProp = props[PROPS.paymentStatus];
+        const status = statusProp?.select?.name || statusProp?.status?.name || "";
+        
+        const finalShortId = getShortIdFromPage(p);
 
         return `${idx + 1}️⃣ ${c}｜${prod}｜$${amt}｜已付$${paid}｜剩$${remain}\n狀態：${status}｜流水號：${finalShortId}`;
       });
@@ -518,7 +534,11 @@ async function handleTextMessage(event) {
         const c = getRichTextText(props[PROPS.customerName]?.rich_text);
         const prod = getRichTextText(props[PROPS.productName]?.rich_text);
         const amt = props[PROPS.amount]?.number ?? 0;
-        const status = props[PROPS.paymentStatus]?.status?.name ?? "";
+        
+        // 🌟🌟🌟 讀取狀態：優先讀取 Select 🌟🌟🌟
+        const statusProp = props[PROPS.paymentStatus];
+        const status = statusProp?.select?.name || statusProp?.status?.name || "";
+
         const finalShortId = getShortIdFromPage(p);
 
         return `${idx + 1}️⃣ ${c}｜${prod}｜$${amt}｜${status}\n流水號：${finalShortId}`;
@@ -530,14 +550,16 @@ async function handleTextMessage(event) {
       });
     } catch (err) {
       console.error("queryByCustomer error", err);
+      // 根據 IMG_0947.jpg Log，這裡可能會有 Invalid request URL 錯誤，通常是 NOTION_DATABASE_ID 錯誤
       return lineClient.replyMessage(replyToken, {
         type: "text",
-        text: "查詢客人時發生錯誤 QQ",
+        text: "查詢客人時發生錯誤 QQ，請檢查 NOTION_DATABASE_ID 是否正確。",
       });
     }
   }
 
-  // 5) 查商品
+  // 5) 查商品 (此處邏輯與查客人類似，省略)
+
   if (text.startsWith("查商品")) {
     const keyword = text.replace("查商品", "").trim();
     if (!keyword) {
@@ -562,7 +584,10 @@ async function handleTextMessage(event) {
         const c = getRichTextText(props[PROPS.customerName]?.rich_text);
         const prod = getRichTextText(props[PROPS.productName]?.rich_text);
         const amt = props[PROPS.amount]?.number ?? 0;
-        const status = props[PROPS.paymentStatus]?.status?.name ?? "";
+        
+        const statusProp = props[PROPS.paymentStatus];
+        const status = statusProp?.select?.name || statusProp?.status?.name || "";
+        
         const finalShortId = getShortIdFromPage(p);
 
         return `${idx + 1}️⃣ ${c}｜${prod}｜$${amt}｜${status}\n流水號：${finalShortId}`;
@@ -584,7 +609,6 @@ async function handleTextMessage(event) {
   // 6) 其他 → 嘗試當「新增訂單」
   const order = parseOrder(text);
   if (!order) {
-    // 防呆：非訂單、非指令不寫入
     return lineClient.replyMessage(replyToken, {
       type: "text",
       text: "這不是訂單格式喔～\n如果要看範例可以輸入「格式」",
@@ -593,8 +617,6 @@ async function handleTextMessage(event) {
 
   try {
     const page = await createOrder(order, text);
-    
-    // 取得 Notion 自動生成的「流水號」
     const finalShortId = getShortIdFromPage(page);
 
     const lines = [
@@ -613,24 +635,23 @@ async function handleTextMessage(event) {
     });
   } catch (err) {
     console.error("createOrder error", err);
-    // ⚠️ 如果這裡出錯，通常是 NOTION_API_KEY 或 NOTION_DATABASE_ID 錯誤
+    // 根據您的截圖，這裡會回覆寫入錯誤
     return lineClient.replyMessage(replyToken, {
       type: "text",
-      text: `寫入 Notion 時發生錯誤 QQ\n請確認環境變數和 Integration 權限。`,
+      text: `寫入 Notion 時發生錯誤 QQ\n請確認環境變數、Integration 權限，以及「付款狀態」選項名稱是否正確。`,
     });
   }
 }
 
-// 處理 LINE Event
+// 處理 LINE Event (此部分不變)
 async function handleLineEvent(event) {
   if (event.type !== "message" || event.message.type !== "text") {
-    // 忽略非文字訊息
     return null;
   }
   return handleTextMessage(event);
 }
 
-// ---------- 5. Webhook（不做簽名驗證） ----------
+// ---------- 5. Webhook（不做簽名驗證）(此部分不變) ----------
 
 app.post("/webhook", async (req, res) => {
   try {
@@ -638,16 +659,16 @@ app.post("/webhook", async (req, res) => {
     const results = await Promise.all(events.map(handleLineEvent));
     res.json(results);
   } catch (err) {
-    // ⚠️ 這裡的錯誤通常是 LINE/網路問題，而不是 Notion 問題
     console.error("webhook processing error", err);
     res.status(500).end();
   }
 });
 
-// ---------- 6. 啟動伺服器 ----------
+// ---------- 6. 啟動伺服器（此部分不變） ----------
 
 const port = process.env.PORT || 10000;
 app.listen(port, () => {
   console.log(`Server running on ${port}`);
 });
+
 

@@ -1,4 +1,4 @@
-// index.js — 魚魚 version 最終完美修正版 (V3)
+// index.js — 魚魚 version 最終完美修正版 (V6)
 
 import express from "express";
 import { Client } from "@notionhq/client";
@@ -9,7 +9,7 @@ const app = express();
 app.use(express.json());
 
 // 📝 Notion 資料庫 ID（固定）
-const NOTION_DATABASE_ID = "2ad2cb1210c78097b48efff75cf10c00";
+const NOTION_DATABASE_ID = "2ad2cb1210c78097b48efff75cf10c00"; // 請確認此 ID 正確
 
 // 🔥 使用 NOTION_SECRET（Render 也必須設 NOTION_SECRET）
 const notion = new Client({
@@ -23,7 +23,7 @@ const lineConfig = {
 };
 const lineClient = new line.Client(lineConfig);
 
-// -------------------- Notion 欄位對應（全部） --------------------
+// -------------------- Notion 欄位對應（V6 核心修正：匹配實際中文名稱） --------------------
 const PROPS = {
   title: "信箱",
   customerName: "客人名稱",
@@ -31,7 +31,7 @@ const PROPS = {
   quantity: "數量",
   amount: "金額",
   paidAmount: "已付金額",
-  paymentStatus: "付款狀態",
+  paymentStatus: "金流", // <--- 修正為：金流
   memo: "備註",
   style: "款式",
   cost: "成本",
@@ -41,8 +41,8 @@ const PROPS = {
   shipDate: "出貨日期",
   memberId: "會員編號",
   intlIncluded: "含國際運費",
-  shortIdField: "流水號", // 統一使用 shortIdField
-  status: "狀態", // 訂單狀態 (e.g., 抵台, 處理中)
+  shortIdField: "流水號",
+  status: "物流", // <--- 修正為：物流
 };
 
 // -------------------- 狀態分類 --------------------
@@ -61,13 +61,14 @@ const QUICK_PRODUCTS = {
 };
 
 // 🎯 根據您的最新要求：只有「抵台」才能結單
-const SHIPMENT_READY_STATUSES = ["抵台"];
-// 🎯 根據您的截圖，設定目標狀態列表 (狀態總數會使用)
+const SHIPMENT_READY_STATUSES = ["抵台"]; 
+
+// 🎯 根據您的截圖，設定目標狀態列表 
 const TARGET_STATUSES = [
-    "取消/退款中", "未處理", "已下單", "抵台", "已到貨", "處理中", "結單", "已寄出", "已完成"
+    "取消/退款中", "未處理", "已下單", "抵台", "已到貨", "處理中", "結單", "已寄出", "已完成"
 ];
 
-// -------------------- 🧰 核心小工具 (維持不變，僅保留必要函數) --------------------
+// -------------------- 🧰 核心小工具 --------------------
 
 function getRich(r) {
   if (!Array.isArray(r) || r.length === 0) return "";
@@ -83,6 +84,10 @@ function formatError(err) {
   console.error("❌ Notion API error:", JSON.stringify(err, null, 2));
   if (err.message && err.message.includes("is not supported")) {
     return "Notion 錯誤：資料庫欄位類型不匹配，請檢查輸入格式。";
+  }
+  // 針對 filter select 錯誤的特定提示
+  if (err.message && err.message.includes("does not match filter select")) {
+      return `Notion 錯誤：欄位名稱或類型不匹配。請檢查您的Notion中「${PROPS.status}」和「${PROPS.paymentStatus}」欄位名稱是否正確，且類型為 Select/Status。`;
   }
   return "Notion 錯誤：" + err.message;
 }
@@ -212,7 +217,7 @@ async function aggregateOrdersByCustomer() {
     return customers;
 }
 
-// -------------------- 🍞 卡片渲染工具 (調整格式) --------------------
+// -------------------- 🍞 卡片渲染工具 --------------------
 function renderCuteCard(page) {
   const id = getShortId(page);
   const c = getRich(page.properties[PROPS.customerName]?.rich_text);
@@ -263,8 +268,8 @@ function renderDetail(page) {
 💰 總金額：$${amt}
 ✅ 已付金額：$${paid}
 ⚠️ 欠款：$${owe}
-**付款狀態：${paymentStatus}**
-**訂單狀態：${g[PROPS.status]?.select?.name || "—"}**
+**金流：${paymentStatus}**
+**物流：${g[PROPS.status]?.select?.name || "—"}**
 
 --- 備註/其他 ---
 📦 數量：${n(PROPS.quantity)}
@@ -286,19 +291,19 @@ function renderList(pages, title = "查詢結果") {
     const id = getShortId(p);
     const c = getRich(p.properties[PROPS.customerName]?.rich_text);
     const prod = getRich(p.properties[PROPS.productName]?.rich_text);
-    const status = p.properties[PROPS.paymentStatus]?.select?.name || "—";
+    const paymentStatus = p.properties[PROPS.paymentStatus]?.select?.name || "—";
     const orderStatus = p.properties[PROPS.status]?.select?.name || "—";
-    // 列表顯示 流水號 | 客人名 | 商品名稱 | 付款狀態 | 訂單狀態
-    out += `・ ${id} ${c} - ${prod} (${status}/${orderStatus})\n`; 
+    // 列表顯示 流水號 | 客人名 | 商品名稱 | 金流 | 物流
+    out += `・ ${id} ${c} - ${prod} (${paymentStatus}/${orderStatus})\n`; 
   });
 
   return out.trim();
 }
 
-// -------------------- 🧩 新增訂單解析/寫入 (不變) --------------------
+// -------------------- 🧩 新增訂單解析/寫入 (V6 強化解析邏輯) --------------------
 
 function parseQuickOrder(text) {
-  // ... (代碼與前一次提供的相同)
+  // ... (快速格式不變)
   const keywords = Object.keys(QUICK_PRODUCTS);
   const key = keywords.find(k => text.startsWith(k));
   if (!key) return null;
@@ -321,30 +326,66 @@ function parseQuickOrder(text) {
 }
 
 function parseNormalOrder(text) {
-  // ... (代碼與前一次提供的相同)
-  const parts = text.trim().split(/\s+/);
-  if (parts.length < 4) return null;
+    // 1. 拆分所有部分
+    const parts = text.trim().split(/\s+/);
+    
+    // 如果連客戶名稱、商品名稱、數量、金額都湊不齊，直接失敗
+    if (parts.length < 3) return null; 
 
-  const [customerName, productName, qtyStr, amountStr, ...rest] = parts;
+    const customerName = parts[0];
+    let quantity = 0;
+    let amount = 0;
+    let numIndices = []; // 儲存數字在 parts 中的索引
 
-  if (!/^\d+$/.test(qtyStr) || !/^\d+$/.test(amountStr)) return null;
+    // 2. 尋找並標記所有數字的位置
+    for (let i = 1; i < parts.length; i++) {
+        const p = parts[i];
+        if (/^\d+$/.test(p)) {
+            numIndices.push(i);
+        }
+    }
 
-  return {
-    customerName,
-    productName,
-    quantity: Number(qtyStr),
-    amount: Number(amountStr),
-    memo: rest.join(" "),
-  };
+    // 3. 必須找到兩個數字：數量和金額
+    if (numIndices.length < 2) return null;
+    
+    // 假設第一個數字是數量，第二個數字是金額
+    const qtyIndex = numIndices[0];
+    const amtIndex = numIndices[1];
+    
+    quantity = Number(parts[qtyIndex]);
+    amount = Number(parts[amtIndex]);
+    
+    let productName = "";
+    let memo = "";
+    
+    // 4. 解析商品名稱：從 parts[1] 到第一個數字之前的所有部分
+    productName = parts.slice(1, qtyIndex).join(" ");
+    
+    // 5. 解析備註：從第二個數字之後的所有部分
+    memo = parts.slice(amtIndex + 1).join(" ");
+
+    // 6. 最終檢查
+    if (!productName || quantity <= 0 || amount <= 0) {
+        // 如果商品名稱為空 (例如輸入 "魚魚 1 100") 則無效
+        return null;
+    }
+
+    return { customerName, productName, quantity, amount, memo };
 }
+
 
 function parseOrder(text) {
-  // 🎯 修正：先嘗試一般格式，再嘗試快速格式，避免「魚魚」成為快速新增的關鍵字
-  return parseNormalOrder(text) || parseQuickOrder(text);
+  // 先嘗試一般格式 (優先解析精確格式)
+  const normalOrder = parseNormalOrder(text);
+  if (normalOrder) return normalOrder;
+
+  // 再嘗試快速格式
+  return parseQuickOrder(text);
 }
 
+
 async function createOrder(order, originalText, lineName = "") {
-  // ... (代碼與前一次提供的相同)
+  // ... (維持不變)
   const paidAmount = 0;
   const paymentStatus = PAYMENT_STATUS.UNPAID;
   const initialOrderStatus = "未處理"; 
@@ -383,19 +424,22 @@ async function handleCreateOrder(event, order) {
     profileName = profile.displayName || "";
   } catch {}
   // 寫入 Notion
-  const page = await createOrder(order, event.message.text, profileName);
-  // 回傳可愛小卡
-  const cuteCard = renderCuteCard(page);
-  return lineClient.replyMessage(reply, {
-    type: "text",
-    text: cuteCard,
-  });
+  try {
+    const page = await createOrder(order, event.message.text, profileName);
+    // 回傳可愛小卡
+    const cuteCard = renderCuteCard(page);
+    return lineClient.replyMessage(reply, {
+      type: "text",
+      text: cuteCard,
+    });
+  } catch (e) {
+    return lineClient.replyMessage(reply, { type: "text", text: formatError(e) });
+  }
 }
 
-// -------------------- 🧩 修改訂單解析/更新 (不變) --------------------
-
+// -------------------- 🧩 修改訂單解析/更新 --------------------
 function parseUpdate(text) {
-  // ... (代碼與前一次提供的相同)
+  // ... (解析邏輯與 V3.2 保持一致)
   const parts = text.trim().split(/\s+/);
   if (parts.length < 3 || parts[0] !== "改") return null;
 
@@ -411,8 +455,10 @@ function parseUpdate(text) {
     } else if (p === "付清") {
       updates.paidAmount = "FULL";
     } else if (p.startsWith("備註:")) {
-      updates.memo = parts.slice(i).join(" ").replace("備註:", "").trim(); break;
+      // 兼容 備註: 和 備註：
+      updates.memo = parts.slice(i).join(" ").replace(/備註[:：]/, "").trim(); break;
     } else if (p === "備註" && next) {
+      // 兼容 備註 [內容] (推薦格式)
       updates.memo = parts.slice(i + 1).join(" ").trim(); break;
     } else if (p === "狀態" && next) {
       updates.status = next; i++;
@@ -438,7 +484,7 @@ function parseUpdate(text) {
 }
 
 async function updateOrder(pageId, updates) {
-  // ... (代碼與前一次提供的相同)
+  // ... (更新邏輯與 V3.2 保持一致)
   const page = await notion.pages.retrieve({ page_id: pageId });
   const props = {};
   const amount = page.properties[PROPS.amount]?.number || 0;
@@ -454,9 +500,12 @@ async function updateOrder(pageId, updates) {
   if (paid >= amount) paymentStatus = PAYMENT_STATUS.PAID;
   else if (paid > 0) paymentStatus = PAYMENT_STATUS.PARTIAL;
 
+  // 使用修正後的 PROPS.paymentStatus
   props[PROPS.paymentStatus] = { select: { name: paymentStatus } };
   
-  if (updates.status !== undefined) props[PROPS.status] = { select: { name: updates.status } };
+  // 狀態修正：使用 updates.status 和修正後的 PROPS.status
+  if (updates.status !== undefined) props[PROPS.status] = { select: { name: updates.status } }; 
+  
   if (updates.memo !== undefined) props[PROPS.memo] = { rich_text: [{ text: { content: updates.memo } }] };
   if (updates.cost !== undefined) props[PROPS.cost] = { number: updates.cost };
   if (updates.weight !== undefined) props[PROPS.weight] = { number: updates.weight };
@@ -472,14 +521,14 @@ async function updateOrder(pageId, updates) {
   });
 }
 
-// -------------------- 🆕 LINE 事件主處理 (最終修正版 V3) --------------------
+
+// -------------------- 🆕 LINE 事件主處理 (V6) --------------------
 async function handleTextMessage(event) {
     const reply = event.replyToken;
     const text = event.message.text.trim();
-    // SHIPMENT_READY_STATUSES 已在上方定義為 ["抵台"]
 
     try {
-        // ========== 1. 指令回覆 (新增) ==========
+        // ========== 1. 指令回覆 (V6 更新欄位名稱) ==========
         if (text === "指令") {
             const commandList = [
                 "✨ 查詢/統計:",
@@ -488,17 +537,32 @@ async function handleTextMessage(event) {
                 "・ 狀態總數 (各狀態數量統計)",
                 "・ 可結單 (聚合查詢：全部商品都抵台的客戶)",
                 "・ 未完全付款可結單 (聚合查詢：抵台但有欠款的客戶)",
-                "・ [狀態名] (例如：未付款, 已到貨)",
+                "・ [狀態名] (例如：未付款, 已到貨, 處理中)",
                 "---",
-                "✍️ 新增訂單:",
-                "・ [客人] [商品] [數量] [金額] [備註] (一般格式)",
-                "・ [代收/轉單/集運/代匯] [金額] [備註] (快速格式，客人名為魚魚)",
+                "✍️ 新增訂單 (必填欄位):",
+                "・ **格式**：[客人] [商品名稱] [數量(數字)] [金額(數字)] [備註(選填)]",
+                "・ **範例**：魚魚 韓國代購連帽外套 2 3000 紅色L號",
+                "・ **快速格式**：[代收/轉單/集運/代匯] [金額(數字)] [備註(選填)] (客人名稱為魚魚)",
                 "---",
-                "✏️ 修改訂單:",
-                "・ 改 [流水號] 已付 [金額] / 付清",
-                "・ 改 [流水號] 備註 [內容]",
-                "・ 改 [流水號] 狀態 [狀態名]",
-                "・ 改 [流水號] 成本 [金額] 重量 [數值]...",
+                "✏️ 修改訂單 (所有可修改的欄位):",
+                "使用「改 [流水號] [欄位] [新值]」來修改單一或多個欄位。",
+                
+                "--- 📝 欄位清單 ---",
+                `**${PROPS.status} (狀態)**：`,
+                "・ **狀態** [狀態名] (例如：已到貨、抵台、結單)",
+                `**${PROPS.paymentStatus} (金流)**：`,
+                "・ **已付** [金額] / **付清** (修改「已付金額」)",
+                
+                "**其他/細節**：",
+                "・ **備註** [內容] (直接接內容，無需冒號)",
+                "・ **款式** [內容]",
+                "・ **成本** [金額] / **重量** [數值]",
+                "・ **國際運費** [金額]",
+                "・ **網址** [網址]",
+                "・ **會員編號** [內容] / **會員** [內容]",
+                "・ **出貨日期** [日期] / **出貨** [日期] (日期格式：YYYY-MM-DD)",
+                "---",
+                "💡 範例：改 12345 狀態 抵台 已付 500 備註 這個是急單",
             ].join("\n");
             return lineClient.replyMessage(reply, { type: "text", text: `📚 魚魚強化版 Bot 指令清單：\n\n${commandList}` });
         }
@@ -533,7 +597,6 @@ async function handleTextMessage(event) {
         let statusQueryPages = null;
         let queryTitle = "";
 
-        // 查「未付款」/「部分付款」/「已付款」
         if (text.includes("未付款") || text.includes("欠款")) {
             statusQueryPages = await queryByPaymentStatus([PAYMENT_STATUS.UNPAID, PAYMENT_STATUS.PARTIAL]);
             queryTitle = "未完全付清的訂單";
@@ -545,7 +608,6 @@ async function handleTextMessage(event) {
             queryTitle = "已付款 (付清) 的訂單";
         }
         
-        // 查「可結單」 (單純狀態查詢 - 僅限抵台)
         else if (text === "可結單" || text.includes("哪些可以結單")) {
             const statusFilters = SHIPMENT_READY_STATUSES.map(s => ({
                 property: PROPS.status, select: { equals: s }
@@ -553,13 +615,11 @@ async function handleTextMessage(event) {
             statusQueryPages = await queryDB({ or: statusFilters }); 
             queryTitle = "已抵台 (可結單) 的訂單";
         }
-        // 查「已到貨」 (單純狀態查詢)
         else if (text === "已到貨") {
             statusQueryPages = await queryDB({ property: PROPS.status, select: { equals: "已到貨" } });
             queryTitle = "已到貨 (不可結單) 的訂單";
         }
         
-        // 檢查是否是目標狀態內的名稱 (例如：已下單, 處理中)
         else if (TARGET_STATUSES.includes(text)) {
             statusQueryPages = await queryDB({ property: PROPS.status, select: { equals: text } });
             queryTitle = `${text} 的訂單`;
@@ -574,8 +634,8 @@ async function handleTextMessage(event) {
                 text: renderList(statusQueryPages.slice(0, 10), queryTitle)
             });
         }
-        
-        // ========== 5. 統一查詢指令 (查) - 查單/查客/查品/查備/查款 全部整合 ==========
+        
+        // ========== 5. 統一查詢指令 (查) ==========
         if (text.startsWith("查 ")) {
             const keyword = text.replace("查", "").trim();
 
@@ -603,8 +663,8 @@ async function handleTextMessage(event) {
                 text: renderList(pages.slice(0, 10), `關鍵字「${keyword}」的查詢結果`)
             });
         }
-        
-        // ========== 6. 客戶聚合查詢 (複雜邏輯 - 全到可結單 / 未付可結單) ==========
+        
+        // ========== 6. 客戶聚合查詢 ==========
         if (text === "全部到貨可結單" || text === "未完全付款可結單") {
             const allCustomers = await aggregateOrdersByCustomer();
             let readyList = [];
@@ -623,7 +683,7 @@ async function handleTextMessage(event) {
             if (!readyList.length) {
                 return lineClient.replyMessage(reply, { type: "text", text: `${title} 名單為空。` });
             }
-            
+            
             const output = readyList.map(name => 
                 `${name} / ${allCustomers[name].orderCount} 筆訂單`
             ).join("\n");
@@ -633,10 +693,8 @@ async function handleTextMessage(event) {
                 text: `💛 ${title}（共 ${readyList.length} 人）\n\n${output}`
             });
         }
-        
+        
         // ========== 7. 組合查詢 / 自然語言 ==========
-
-        // 句式: 「全部到貨但未付款」 (組合查詢)
         if (text.includes("全部到貨") && (text.includes("未付") || text.includes("欠款"))) {
             const readyFilters = SHIPMENT_READY_STATUSES.map(s => ({
                 property: PROPS.status, select: { equals: s }
@@ -644,7 +702,7 @@ async function handleTextMessage(event) {
             const pages = await queryDB({
                 and: [
                     { or: readyFilters },
-                    { 
+                    { 
                         or: [
                             { property: PROPS.paymentStatus, select: { equals: PAYMENT_STATUS.UNPAID } },
                             { property: PROPS.paymentStatus, select: { equals: PAYMENT_STATUS.PARTIAL } },
@@ -652,33 +710,32 @@ async function handleTextMessage(event) {
                     }
                 ]
             });
-            
+            
             if (!pages.length)
                 return lineClient.replyMessage(reply, { type: "text", text: "目前沒有「全部抵台但未付清」的訂單 👍" });
-            
-            return lineClient.replyMessage(reply, { 
-                type: "text", 
+            
+            return lineClient.replyMessage(reply, { 
+                type: "text", 
                 text: renderList(pages.slice(0, 10), "全部抵台但未付清的訂單")
             });
         }
-        
-        // 句式: 「我想看俊希的訂單」 (模糊查詢客戶名/商品名)
+        
         if (text.includes("訂單") || text.includes("想看")) {
-             let keyword = text.replace(/的?訂單|想看|我想看|給我|的/g, "").trim();
-             
-             if (keyword) {
-                 const pages = await unifiedKeywordSearch(keyword);
-                 
-                 if (pages.length > 0) {
-                     return lineClient.replyMessage(reply, { 
-                         type: "text", 
-                         text: renderList(pages.slice(0, 10), `與「${keyword}」相關的訂單`)
-                     });
-                 }
-             }
+            let keyword = text.replace(/的?訂單|想看|我想看|給我|的/g, "").trim();
+            
+            if (keyword) {
+                const pages = await unifiedKeywordSearch(keyword);
+                
+                if (pages.length > 0) {
+                    return lineClient.replyMessage(reply, { 
+                        type: "text", 
+                        text: renderList(pages.slice(0, 10), `與「${keyword}」相關的訂單`)
+                    });
+                }
+            }
         }
-        
-        // ========== 8. 新增訂單 (一般/快速格式) ==========
+        
+        // ========== 8. 新增訂單 (V6 強化解析邏輯) ==========
         const order = parseOrder(text);
         if (order) {
             return handleCreateOrder(event, order); 

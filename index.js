@@ -4,6 +4,7 @@
 import express from "express";
 import { Client } from "@notionhq/client";
 import line from "@line/bot-sdk";
+console.log("NOTION_SECRET =", process.env.NOTION_SECRET);
 
 // -------------------- 基本設定 --------------------
 const app = express();
@@ -323,4 +324,5 @@ app.post("/webhook", async (req, res) => {
 });
 
 app.listen(process.env.PORT || 10000, () => console.log("Server running"));
+
 

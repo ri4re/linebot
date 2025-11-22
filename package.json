@@ -1,15 +1,15 @@
 {
   "name": "line-notion-bot",
   "version": "1.0.0",
+  "description": "Fishyu LINE Bot + Notion",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "@line/bot-sdk": "^7.6.0",
-    "@notionhq/client": "^5.4.0",
-    "axios": "^1.7.7",
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2"
+    "@notionhq/client": "^2.2.3",
+    "@line/bot-sdk": "^7.5.2",
+    "express": "^4.18.2"
   }
 }

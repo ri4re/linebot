@@ -15,8 +15,8 @@ const notion = new Client({
   auth: process.env.NOTION_API_KEY,
 });
 
-// 加上 .trim() 去除前後空白，防止複製貼上時出錯
-const NOTION_DATABASE_ID = process.env.NOTION_DATABASE_ID ? process.env.NOTION_DATABASE_ID.trim() : "";
+// ✅ 請直接複製這一行，填入你的純 ID
+const NOTION_DATABASE_ID = "2ad2cb1210c78097b48efff75cf10c00";
 
 // Notion 欄位名稱（與你的截圖完全對應）
 const PROPS = {
@@ -489,4 +489,5 @@ const port = process.env.PORT || 10000;
 app.listen(port, () => {
   console.log(`Server running on ${port}`);
 });
+
 

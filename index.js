@@ -207,6 +207,12 @@ function renderCuteCard(page) {
     );
 }
 
+// ... (程式碼略)
+
+// -------------------- 🍞 卡片渲染工具 (V11 格式修正 - 加入 Emoji) --------------------
+
+// ... (renderCuteCard 函數保持不變)
+
 function renderDetail(page) {
     const id = getShortId(page);
     const g = page.properties;
@@ -218,29 +224,36 @@ function renderDetail(page) {
     const paid = n(PROPS.paidAmount);
     const owe = amt - paid;
     const paymentStatus = g[PROPS.paymentStatus]?.select?.name || "—";
-    // 🎯 V12 修正：狀態讀取改為 select
-    const orderStatus = g[PROPS.status]?.select?.name || "—";
+    // 物流是 Status 類型
+    const orderStatus = g[PROPS.status]?.status?.name || "—";
     
-    // 依照您的格式要求重新排列
+    // 🎯 修正排版：確保每個欄位獨立一行，特別是狀態和金流。
     const detailText = 
 `📄 訂單詳細｜${id}
 
+💰 交易資訊
 客人：${f(PROPS.customerName)}
 商品：${f(PROPS.productName)}
+款式：${f(PROPS.style) || "未填"}
 金額：$${amt}
 已付：$${paid}
 欠款：$${owe}
-**金流：${paymentStatus}**
-**狀態：${orderStatus}** 含國際運費：${g[PROPS.intlIncluded]?.checkbox ? "是" : "否"}
+
+💳 金流：**${paymentStatus}**
+📦 狀態：**${orderStatus}**
+含國際運費：${g[PROPS.intlIncluded]?.checkbox ? "是" : "否"}
+
+💸 成本/運費
 成本：${n(PROPS.cost)}
 重量：${n(PROPS.weight)}g
 預計國際運費：${n(PROPS.intlCost)}
+
+🔗 其他資訊
 商品網址：${g[PROPS.url]?.url || "未填"}
 出貨日期：${g[PROPS.shipDate]?.date?.start || "未填"}
-款式：${f(PROPS.style) || "未填"}
 會員編號：${f(PROPS.memberId) || "未填"}
 
-備註：${f(PROPS.memo) || "無"}`
+📋 備註：${f(PROPS.memo) || "無"}`
     ;
 
     return detailText;
@@ -725,3 +738,4 @@ const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`魚魚強化版 Bot 正在 port ${port} 上運行 🚀`);
 });
+

@@ -452,189 +452,196 @@ async function updateOrder(pageId, updates) {
   });
 }
 
-// -------------------- LINE 事件 --------------------
+// -------------------- LINE 事件主處理 (V13 修正版：恢復金流與組合查詢) --------------------
 async function handleTextMessage(event) {
-  const reply = event.replyToken;
-  const text = event.message.text.trim();
+    const reply = event.replyToken;
+    const text = event.message.text.trim();
 
-  try {
-
-    // 主選單
-    if (text === "指令") {
-      const commandMenu = [
-        "📚 魚魚強化版 Bot 主選單：",
-        "請輸入以下關鍵字查看指令清單：",
-        "・ 查詢指令",
-        "・ 新增指令",
-        "・ 修改指令",
-        "---",
-        "💡 例如：輸入「新增指令」"
-      ].join("\n");
-      return lineClient.replyMessage(reply, { type: "text", text: commandMenu });
-    }
-
-    // 新增指令
-    if (text === "新增指令") {
-      const createCommandList = [
-        "📝 新增訂單：",
-        "格式：[客人] [商品] [數量] [金額] [備註]",
-        "例：魚魚 外套 2 3000 黑色L",
-        "---",
-        "📦 快速新增：",
-        "例：代收 5000 朋友的包裹"
-      ].join("\n");
-      return lineClient.replyMessage(reply, { type: "text", text: createCommandList });
-    }
-
-    // 修改指令
-    if (text === "修改指令") {
-      const updateCommandList = [
-        "✏️ 修改訂單格式：",
-        "改 [流水號] [欄位] [值]",
-        "例：改 12345 狀態 抵台 已付 500 備註 急單",
-        "---",
-        "可修改欄位：",
-        "狀態 / 已付 / 備註 / 款式 / 成本 / 重量 / 國際運費 / 網址 / 會員 / 出貨"
-      ].join("\n");
-      return lineClient.replyMessage(reply, { type: "text", text: updateCommandList });
-    }
-
-    // 查詢指令
-    if (text === "查詢指令") {
-      const queryCommandList = [
-        "✨ 查詢：",
-        "查 [流水號]",
-        "查 [關鍵字]",
-        "---",
-        "📊 狀態查詢：",
-        "輸入任一狀態（已到貨、抵台、處理中...）",
-        "可結單 / 狀態總數 / 未付款"
-      ].join("\n");
-      return lineClient.replyMessage(reply, { type: "text", text: queryCommandList });
-    }
-
-    // 修改訂單
-    if (text.startsWith("改 ")) {
-      const updates = parseUpdate(text);
-
-      if (!updates)
-        return lineClient.replyMessage(reply, { type: "text", text: "格式錯誤，請輸入「修改指令」" });
-
-      const pageId = await findPageIdByShortId(updates.shortId);
-      if (!pageId)
-        return lineClient.replyMessage(reply, { type: "text", text: `找不到流水號 ${updates.shortId}` });
-
-      const updated = await updateOrder(pageId, updates);
-
-      return lineClient.replyMessage(reply, {
-        type: "text",
-        text: `✨ 已更新訂單：${getShortId(updated)}`
-      });
-    }
-
-    // 狀態總數
-    if (text === "狀態總數") {
-      const summary = await querySpecificStatusSummary();
-      return lineClient.replyMessage(reply, { type: "text", text: summary });
-    }
-
-    // 狀態查詢（物流：Status）
-    let statusQueryPages = null;
-    let queryTitle = "";
-
-    if (text === "可結單") {
-      const filters = SHIPMENT_READY_STATUSES.map(s => ({
-        property: PROPS.status, status: { equals: s }
-      }));
-      statusQueryPages = await queryDB({ or: filters });
-      queryTitle = "已抵台（可結單）";
-    }
-
-    else if (TARGET_STATUSES.includes(text)) {
-      statusQueryPages = await queryDB({ property: PROPS.status, status: { equals: text } });
-      queryTitle = `${text} 的訂單`;
-    }
-
-    if (statusQueryPages !== null) {
-      if (!statusQueryPages.length)
-        return lineClient.replyMessage(reply, { type: "text", text: `沒有「${text}」的訂單 ❤️` });
-
-      return lineClient.replyMessage(reply, {
-        type: "text",
-        text: renderList(statusQueryPages.slice(0, 10), queryTitle)
-      });
-    }
-
-    // 查詢（查 XX）
-    if (text.startsWith("查 ")) {
-      const keyword = text.replace("查", "").trim();
-
-      if (!keyword)
-        return lineClient.replyMessage(reply, { type: "text", text: "請輸入關鍵字" });
-
-      if (/^\d+$/.test(keyword)) {
-        const pageId = await findPageIdByShortId(keyword);
-        if (pageId) {
-          const p = await notion.pages.retrieve({ page_id: pageId });
-          return lineClient.replyMessage(reply, { type: "text", text: renderDetail(p) });
+    try {
+        // ========== 1. 主指令選單 / 幫助文件 ==========
+        if (text === "指令") {
+            const commandMenu = [
+                "📚 魚魚強化版 Bot 主選單：",
+                "請輸入以下關鍵字查看指令清單：",
+                "・ 查詢指令",
+                "・ 新增指令",
+                "・ 修改指令",
+                "---",
+                "💡 例如：輸入「新增指令」"
+            ].join("\n");
+            return lineClient.replyMessage(reply, { type: "text", text: commandMenu });
         }
-      }
+        if (text === "新增指令") {
+             const createCommandList = [
+                "📝 新增訂單：",
+                "格式：[客人] [商品] [數量] [金額] [備註]",
+                "例：魚魚 外套 2 3000 黑色L",
+                "---",
+                "📦 快速新增：",
+                "例：代收 5000 朋友的包裹"
+            ].join("\n");
+            return lineClient.replyMessage(reply, { type: "text", text: createCommandList });
+        }
+        if (text === "修改指令") {
+            const updateCommandList = [
+                "✏️ 修改訂單格式：",
+                "改 [流水號] [欄位] [值]",
+                "例：改 12345 狀態 抵台 已付 500 備註 急單",
+                "---",
+                "可修改欄位：",
+                "狀態 / 已付 / 備註 / 款式 / 成本 / 重量 / 國際運費 / 網址 / 會員 / 出貨"
+            ].join("\n");
+            return lineClient.replyMessage(reply, { type: "text", text: updateCommandList });
+        }
+        if (text === "查詢指令") {
+            const queryCommandList = [
+                "✨ 查詢：",
+                "查 [流水號]",
+                "查 [關鍵字]",
+                "---",
+                "📊 狀態查詢：",
+                "輸入任一狀態（已到貨、抵台、處理中...）",
+                "可結單 / 狀態總數 / 未付款",
+                "---",
+                "💡 例：輸入「未付款」或「可結單」"
+            ].join("\n");
+            return lineClient.replyMessage(reply, { type: "text", text: queryCommandList });
+        }
 
-      const pages = await unifiedKeywordSearch(keyword);
+        // ========== 2. 修改訂單 (改) ==========
+        if (text.startsWith("改 ")) {
+            const updates = parseUpdate(text);
+            if (!updates)
+                return lineClient.replyMessage(reply, { type: "text", text: "格式錯誤，請輸入「修改指令」" });
+            const pageId = await findPageIdByShortId(updates.shortId);
+            if (!pageId)
+                return lineClient.replyMessage(reply, { type: "text", text: `找不到流水號 ${updates.shortId}` });
+            const updated = await updateOrder(pageId, updates);
+            return lineClient.replyMessage(reply, {
+                type: "text",
+                text: `✨ 已更新訂單：${getShortId(updated)}`
+            });
+        }
 
-      if (!pages.length)
-        return lineClient.replyMessage(reply, { type: "text", text: `查不到「${keyword}」` });
+        // ========== 3. 狀態數量總覽 ==========
+        if (text === "狀態總數") {
+            const summary = await querySpecificStatusSummary();
+            return lineClient.replyMessage(reply, { type: "text", text: summary });
+        }
 
-      return lineClient.replyMessage(reply, {
-        type: "text",
-        text: renderList(pages.slice(0, 10), `關鍵字「${keyword}」`)
-      });
+        // ========== 4. 狀態與預設查詢（金流與物流） ==========
+        let statusQueryPages = null;
+        let queryTitle = "";
+
+        // 🎯 恢復金流查詢 (Select)
+        if (text.includes("未付款") || text.includes("欠款")) {
+            statusQueryPages = await queryByPaymentStatus([PAYMENT_STATUS.UNPAID, PAYMENT_STATUS.PARTIAL]);
+            queryTitle = "未完全付清的訂單";
+        } else if (text.includes("部分付款")) {
+            statusQueryPages = await queryByPaymentStatus([PAYMENT_STATUS.PARTIAL]);
+            queryTitle = "部分付款的訂單";
+        } else if (text.includes("已付款") || text.includes("付清")) {
+            statusQueryPages = await queryByPaymentStatus([PAYMENT_STATUS.PAID]);
+            queryTitle = "已付款 (付清) 的訂單";
+        }
+
+        // 🎯 恢復物流查詢 (Status)
+        else if (text === "可結單") {
+            const filters = SHIPMENT_READY_STATUSES.map(s => ({
+                property: PROPS.status, status: { equals: s }
+            }));
+            statusQueryPages = await queryDB({ or: filters });
+            queryTitle = "已抵台（可結單）";
+        }
+        else if (TARGET_STATUSES.includes(text)) {
+            statusQueryPages = await queryDB({ property: PROPS.status, status: { equals: text } });
+            queryTitle = `${text} 的訂單`;
+        }
+
+        if (statusQueryPages !== null) {
+            if (!statusQueryPages.length)
+                return lineClient.replyMessage(reply, { type: "text", text: `目前沒有符合「${queryTitle.replace(/的訂單|/g, '')}」的項目 ❤️` });
+
+            return lineClient.replyMessage(reply, {
+                type: "text",
+                text: renderList(statusQueryPages.slice(0, 10), queryTitle)
+            });
+        }
+
+        // ========== 5. 統一查詢指令 (查) ==========
+        if (text.startsWith("查 ")) {
+            const keyword = text.replace("查", "").trim();
+
+            if (!keyword)
+                return lineClient.replyMessage(reply, { type: "text", text: "請在「查」後面提供關鍵字 🔎" });
+
+            // A. 嘗試 Short ID 查詢 (查單)
+            const isShortId = /^\d+$/.test(keyword);
+            if (isShortId) {
+                const pageId = await findPageIdByShortId(keyword);
+                if (pageId) {
+                    const p = await notion.pages.retrieve({ page_id: pageId });
+                    return lineClient.replyMessage(reply, { type: "text", text: renderDetail(p) });
+                }
+            }
+
+            // B. 多欄位關鍵字查詢 (查客 / 查品 / 查備 / 查款)
+            const pages = await unifiedKeywordSearch(keyword);
+
+            if (!pages.length)
+                return lineClient.replyMessage(reply, { type: "text", text: `查不到與「${keyword}」相關的訂單` });
+
+            return lineClient.replyMessage(reply, {
+                type: "text",
+                text: renderList(pages.slice(0, 10), `關鍵字「${keyword}」的查詢結果`)
+            });
+        }
+
+        // ========== 6. 組合查詢 / 自然語言 (抵台 + 未付) ==========
+        if (text.includes("抵台") && text.includes("未付")) {
+            const filters = SHIPMENT_READY_STATUSES.map(s => ({
+                property: PROPS.status, status: { equals: s } // 物流 Status
+            }));
+
+            const pages = await queryDB({
+                and: [
+                    { or: filters }, // 抵台狀態
+                    {
+                        or: [ // 未付清狀態 (UNPAID 或 PARTIAL)
+                            { property: PROPS.paymentStatus, select: { equals: PAYMENT_STATUS.UNPAID } },
+                            { property: PROPS.paymentStatus, select: { equals: PAYMENT_STATUS.PARTIAL } }
+                        ]
+                    }
+                ]
+            });
+
+            if (!pages.length)
+                return lineClient.replyMessage(reply, { type: "text", text: "目前沒有「全部抵台但未付清」的訂單 👍" });
+
+            return lineClient.replyMessage(reply, {
+                type: "text",
+                text: renderList(pages.slice(0, 10), "全部抵台但未付清的訂單")
+            });
+        }
+
+        // ========== 7. 新增訂單 ==========
+        const order = parseOrder(text);
+        if (order) return handleCreateOrder(event, order);
+
+        // ========== 8. 聽不懂 (Fallback) ==========
+        return lineClient.replyMessage(reply, {
+            type: "text",
+            text: "聽不懂喔 💧\n請輸入「指令」查看所有可用功能。"
+        });
+
+    } catch (err) {
+        return lineClient.replyMessage(reply, {
+            type: "text",
+            text: formatError(err)
+        });
     }
-
-    // 自然語言（全部抵台 + 未付）
-    if (text.includes("抵台") && text.includes("未付")) {
-      const filters = SHIPMENT_READY_STATUSES.map(s => ({
-        property: PROPS.status, status: { equals: s }
-      }));
-
-      const pages = await queryDB({
-        and: [
-          { or: filters },
-          {
-            or: [
-              { property: PROPS.paymentStatus, select: { equals: PAYMENT_STATUS.UNPAID } },
-              { property: PROPS.paymentStatus, select: { equals: PAYMENT_STATUS.PARTIAL } }
-            ]
-          }
-        ]
-      });
-
-      if (!pages.length)
-        return lineClient.replyMessage(reply, { type: "text", text: "沒有抵台但未付清的訂單" });
-
-      return lineClient.replyMessage(reply, {
-        type: "text",
-        text: renderList(pages.slice(0, 10), "抵台但未付清")
-      });
-    }
-
-    // 新增訂單
-    const order = parseOrder(text);
-    if (order) return handleCreateOrder(event, order);
-
-    // 聽不懂
-    return lineClient.replyMessage(reply, {
-      type: "text",
-      text: "聽不懂喔 💧\n輸入「指令」查看所有功能。"
-    });
-
-  } catch (err) {
-    return lineClient.replyMessage(reply, {
-      type: "text",
-      text: formatError(err)
-    });
-  }
 }
+
 
 // -------------------- LINE Webhook 路由 --------------------
 app.post("/webhook", (req, res) => {
@@ -656,4 +663,5 @@ const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`魚魚強化版 Bot 正在 port ${port} 運行 🚀`);
 });
+
 

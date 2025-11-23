@@ -26,6 +26,7 @@ const lineClient = new line.Client(lineConfig);
 // -------------------- Notion 欄位對應 --------------------
 const PROPS = {
   title: "信箱",
+  lineName: "LINE名稱",
   customerName: "客人名稱",
   productName: "商品名稱",
   quantity: "數量",
@@ -327,7 +328,8 @@ async function createOrder(order, originalText, lineName = "") {
   const page = await notion.pages.create({
     parent: { database_id: NOTION_DATABASE_ID },
     properties: {
-      [PROPS.title]: { title: [{ text: { content: originalText } }] },
+      [PROPS.title]: { title: [{ text: { content: "" } }] },
+      [PROPS.lineName]: { rich_text: [{ text: { content: lineName || "" } }] },
       [PROPS.customerName]: { rich_text: [{ text: { content: order.customerName } }] },
       [PROPS.productName]: { rich_text: [{ text: { content: order.productName } }] },
       [PROPS.quantity]: { number: order.quantity },
@@ -806,6 +808,7 @@ const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`魚魚強化版 Bot 正在 port ${port} 運行 🚀`);
 });
+
 
 
 

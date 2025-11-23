@@ -529,43 +529,69 @@ async function handleTextMessage(event) {
             return lineClient.replyMessage(reply, { type: "text", text: summary });
         }
 
-        // ========== 4. 狀態與預設查詢（金流與物流） ==========
+       // ========== 4. 狀態與預設查詢（金流與物流） ==========
         let statusQueryPages = null;
         let queryTitle = "";
+        let isCustomerSummary = false; // 判斷是否使用聚合渲染
+        
+        // 1. 找出所有已抵台的訂單（這是所有三種聚合查詢的基礎）
+        let allShipmentReadyPages = null;
+        
+        // 🎯 NEW: 處理三種客人級別聚合查詢
+        const isAggregateQuery = text === "抵台全付清" || text === "抵台部分未付" || text === "抵台未付";
+        
+        if (isAggregateQuery) {
+            // 基礎查詢：找出所有抵台訂單
+            const filters = SHIPMENT_READY_STATUSES.map(s => ({
+                property: PROPS.status, status: { equals: s }
+            }));
+            allShipmentReadyPages = await queryDB({ or: filters });
+            
+            if (!allShipmentReadyPages.length) {
+                return lineClient.replyMessage(reply, { type: "text", text: "目前沒有任何已抵台的訂單。" });
+            }
 
-        // 🎯 恢復金流查詢 (Select)
-        if (text.includes("未付款") || text.includes("欠款")) {
-            statusQueryPages = await queryByPaymentStatus([PAYMENT_STATUS.UNPAID, PAYMENT_STATUS.PARTIAL]);
-            queryTitle = "未完全付清的訂單";
-        } else if (text.includes("部分付款")) {
-            statusQueryPages = await queryByPaymentStatus([PAYMENT_STATUS.PARTIAL]);
-            queryTitle = "部分付款的訂單";
-        } else if (text.includes("已付款") || text.includes("付清")) {
-            statusQueryPages = await queryByPaymentStatus([PAYMENT_STATUS.PAID]);
-            queryTitle = "已付款 (付清) 的訂單";
+            // 執行客戶級別聚合
+            const groups = aggregateCustomerPaymentStatus(allShipmentReadyPages);
+            let replyText = "";
+
+            if (text === "抵台全付清") {
+                replyText = renderFinalCustomerSummary(groups, "all_paid");
+            } else if (text === "抵台部分未付") {
+                replyText = renderFinalCustomerSummary(groups, "partial_only");
+            } else if (text === "抵台未付") {
+                replyText = renderFinalCustomerSummary(groups, "unpaid_exists");
+            }
+            
+            return lineClient.replyMessage(reply, { type: "text", text: replyText });
         }
 
-        // 🎯 恢復物流查詢 (Status)
-        else if (text === "可結單") {
+
+        // 🎯 舊的「可結單」廣義指令（非客人級別聚合）
+        else if (text === "可結單" || text.includes("抵台可結")) {
             const filters = SHIPMENT_READY_STATUSES.map(s => ({
                 property: PROPS.status, status: { equals: s }
             }));
             statusQueryPages = await queryDB({ or: filters });
-            queryTitle = "已抵台（可結單）";
+            queryTitle = "已抵台（可結單）的訂單";
         }
-        else if (TARGET_STATUSES.includes(text)) {
-            statusQueryPages = await queryDB({ property: PROPS.status, status: { equals: text } });
-            queryTitle = `${text} 的訂單`;
-        }
+        
+        // 🎯 舊的金流狀態查詢（非抵台）
+        else if (text.includes("未付款") || text.includes("欠款")) {
+            statusQueryPages = await queryByPaymentStatus([PAYMENT_STATUS.UNPAID, PAYMENT_STATUS.PARTIAL]);
+            queryTitle = "未完全付清的訂單";
+        } 
+        // ... (其他舊的單一狀態查詢保留在後面) ...
 
+        // 渲染結果 (處理非聚合查詢)
         if (statusQueryPages !== null) {
             if (!statusQueryPages.length)
-                return lineClient.replyMessage(reply, { type: "text", text: `目前沒有符合「${queryTitle.replace(/的訂單|/g, '')}」的項目 ❤️` });
+                return lineClient.replyMessage(reply, { type: "text", text: `目前沒有符合「${queryTitle.replace(/的訂單|客人清單/g, '')}」的項目 ❤️` });
 
-            return lineClient.replyMessage(reply, {
-                type: "text",
-                text: renderList(statusQueryPages.slice(0, 10), queryTitle)
-            });
+            // 此處只使用 renderList (舊的格式)
+            const replyText = renderList(statusQueryPages.slice(0, 10), queryTitle);
+
+            return lineClient.replyMessage(reply, { type: "text", text: replyText });
         }
 
         // ========== 5. 統一查詢指令 (查) ==========
@@ -596,6 +622,117 @@ async function handleTextMessage(event) {
                 text: renderList(pages.slice(0, 10), `關鍵字「${keyword}」的查詢結果`)
             });
         }
+
+      // -------------------- 👤 客人清單聚合渲染工具 (NEW) --------------------
+function renderCustomerSummary(pages, title = "客人清單") {
+    // 1. 統計每個客人名下的訂單筆數
+    const customerCounts = {};
+    pages.forEach(p => {
+        const customerName = getRich(p.properties[PROPS.customerName]?.rich_text);
+        if (customerName) {
+            customerCounts[customerName] = (customerCounts[customerName] || 0) + 1;
+        }
+    });
+
+    // 2. 排序並格式化輸出
+    let out = `👤 ${title}（共 ${Object.keys(customerCounts).length} 位客人）\n\n`;
+    
+    // 根據訂單筆數降序排列
+    const sortedCustomers = Object.entries(customerCounts).sort(([, countA], [, countB]) => countB - countA);
+
+    sortedCustomers.forEach(([name, count]) => {
+        out += `・ ${name} - (${count} 筆)\n`;
+    });
+
+    return out.trim();
+}
+
+      // -------------------- 💰 客人級別的金流狀態聚合工具 (NEW) --------------------
+function aggregateCustomerPaymentStatus(pages) {
+    const customerData = {};
+
+    // 1. 遍歷所有訂單，按客戶分組，並找出該客戶擁有的所有金流狀態
+    pages.forEach(p => {
+        const customerName = getRich(p.properties[PROPS.customerName]?.rich_text);
+        if (!customerName) return;
+
+        const paymentStatus = p.properties[PROPS.paymentStatus]?.select?.name;
+        const shortId = getShortId(p);
+
+        if (!customerData[customerName]) {
+            customerData[customerName] = {
+                counts: 0,
+                statuses: new Set(),
+                ids: []
+            };
+        }
+        
+        customerData[customerName].counts += 1;
+        customerData[customerName].statuses.add(paymentStatus);
+        customerData[customerName].ids.push(shortId);
+    });
+
+    // 2. 根據您的業務邏輯對客戶進行分類
+    const finalGroups = {
+        paid: [], // 1. 只限全付清
+        partial: [], // 2. 只剩部分付款
+        unpaid: [] // 3. 只要有未付款 (嚴重欠款)
+    };
+
+    for (const [name, data] of Object.entries(customerData)) {
+        const hasUnpaid = data.statuses.has(PAYMENT_STATUS.UNPAID); // "未付款"
+        const hasPartial = data.statuses.has(PAYMENT_STATUS.PARTIAL); // "部分付款"
+        const hasPaid = data.statuses.has(PAYMENT_STATUS.PAID); // "已付款"
+        
+        // 🚨 客人分類 3 (最高優先級：只要有未付款)
+        if (hasUnpaid) {
+            finalGroups.unpaid.push({ name, count: data.counts });
+        } 
+        // 🚨 客人分類 2 (次級優先級：有部分付款，但沒有未付款)
+        else if (hasPartial) {
+            finalGroups.partial.push({ name, count: data.counts });
+        } 
+        // 🚨 客人分類 1 (最低優先級：所有都是已付款)
+        else if (hasPaid) {
+            finalGroups.paid.push({ name, count: data.counts });
+        }
+        // 注意：理論上不會有其他情況，除非訂單金流狀態為空或非預期值
+    }
+
+    return finalGroups;
+}
+
+// -------------------- 最終渲染函數 (使用新的聚合結果) --------------------
+function renderFinalCustomerSummary(groups, type) {
+    let list = [];
+    let title = "";
+    
+    if (type === "all_paid") {
+        list = groups.paid;
+        title = "✅ 抵台訂單【全付清】客人清單";
+    } else if (type === "partial_only") {
+        list = groups.partial;
+        title = "⚠️ 抵台訂單【只剩部分欠款】客人清單";
+    } else if (type === "unpaid_exists") {
+        list = groups.unpaid;
+        title = "❌ 抵台訂單【有未付款】客人清單";
+    }
+
+    if (list.length === 0) {
+        return `✅ 查詢成功：目前沒有符合「${title.split('【')[1].replace(/】客人清單/g, '')}」的客人。`;
+    }
+
+    let output = `${title}（共 ${list.length} 位客人）\n\n`;
+    
+    // 根據訂單筆數降序排列
+    const sortedList = list.sort((a, b) => b.count - a.count);
+
+    sortedList.forEach(item => {
+        output += `・ ${item.name} - (${item.count} 筆抵台訂單)\n`;
+    });
+
+    return output.trim();
+}
 
         // ========== 6. 組合查詢 / 自然語言 (抵台 + 未付) ==========
         if (text.includes("抵台") && text.includes("未付")) {
@@ -663,5 +800,6 @@ const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`魚魚強化版 Bot 正在 port ${port} 運行 🚀`);
 });
+
 
 
